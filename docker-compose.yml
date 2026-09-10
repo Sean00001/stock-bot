@@ -1,0 +1,55 @@
+version: '3.8'
+
+# 架構調整(2026-08-27)：拿掉 Postgres + Redis + Channels，worker 直接把
+# tick 快照寫成 JSON 檔到 flowdata volume，backend 只負責把檔案伺服出去、
+# 做簡易登入 session；兩個服務共用同一個 flowdata volume。
+
+services:
+  backend:
+    build: ./backend
+    container_name: stock_backend
+    command: >
+      bash -c "python manage.py migrate &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - ./backend:/app
+      - ./flowdata:/data/flowdata
+    ports:
+      - "8000:8000"
+    environment:
+      - FLOWDATA_DIR=/data/flowdata
+      - APP_USERNAME=${APP_USERNAME}
+      - APP_PASSWORD=${APP_PASSWORD}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+      - DJANGO_DEBUG=${DJANGO_DEBUG}
+
+  worker:
+    build: ./worker
+    container_name: stock_worker
+    command: python main.py
+    volumes:
+      - ./worker:/app
+      - ./flowdata:/data/flowdata
+    environment:
+      - SHIOAJI_API_KEY=${SHIOAJI_API_KEY}
+      - SHIOAJI_SECRET_KEY=${SHIOAJI_SECRET_KEY}
+      # 2026-08-28 新增：多連線/多帳號支援。.env 沒設定這幾個變數時用預設值
+      # (CONNECTIONS_PER_ACCOUNT 預設 5、第二組帳號空字串代表沒有)，所以現在
+      # 這個單帳號版本不需要改 .env；之後如果想加第二組帳號，只要在 .env 加
+      # SHIOAJI_API_KEY_2 / SHIOAJI_SECRET_KEY_2，不用再改這個檔案。
+      - CONNECTIONS_PER_ACCOUNT=${CONNECTIONS_PER_ACCOUNT:-5}
+      - SHIOAJI_API_KEY_2=${SHIOAJI_API_KEY_2:-}
+      - SHIOAJI_SECRET_KEY_2=${SHIOAJI_SECRET_KEY_2:-}
+      - FLOWDATA_DIR=/data/flowdata
+      - SNAPSHOT_SEC=${SNAPSHOT_SEC}
+
+  frontend:
+    build: ./frontend
+    container_name: stock_frontend
+    command: npm run dev -- --host 0.0.0.0
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+

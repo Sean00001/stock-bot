@@ -1,0 +1,29 @@
+# 機密資訊，絕對不能進版控
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# 執行期產生的資料/log，檔案大且會一直變動，不需要版控
+flowdata/*
+!flowdata/.gitkeep
+*.log
+
+# 部署過程中留下的備份檔
+*.bak_*
+
+# 編輯器/系統雜項
+.DS_Store
+
+# Django 本機開發用的 sqlite session db，容器啟動時 migrate 會自動重建
+db.sqlite3
