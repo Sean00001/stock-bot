@@ -5,13 +5,21 @@
        兩側，讓整頁變寬；.dashboard 內部(標題、控制列、統計方塊、兩張主圖、
        比例圖)維持跟未下鑽時一模一樣的寬度，不會因為多了卡片而被壓縮。 -->
   <div v-else class="page" :class="{ 'page--drilled': !!controls.sector }">
+    <!-- 切換族群/回到大盤/換日期都會觸發一次同步的全量重新聚合計算，資料量大
+         時這段計算會佔用主執行緒讓畫面「凍住」一下；用這層遮罩+轉圈圈在計算
+         開始前先畫出來，讓使用者知道系統還活著，不是當機，算完才收掉。 -->
+    <div v-if="switching" class="loading-overlay">
+      <div class="spinner"></div>
+      <div class="loading-text">{{ switchingLabel }}</div>
+    </div>
+
     <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="left" />
 
     <div class="dashboard">
       <header class="top-bar glass-panel">
         <div class="logo">
           <h1 v-if="!controls.sector">盤中資金流向・逐筆 (全市場)</h1>
-          <h1 v-else @click="controls.sector = null" style="cursor: pointer; color: #0ea5e9">
+          <h1 v-else @click="returnToMarket" style="cursor: pointer; color: #0ea5e9">
             &larr; 返回大盤 | {{ controls.sector }} 族群資金流向
           </h1>
         </div>
@@ -95,7 +103,7 @@
 </template>
 
 <script setup>
-import { reactive, ref, computed, onMounted, watch } from 'vue'
+import { reactive, ref, computed, onMounted, watch, nextTick } from 'vue'
 import Login from './components/Login.vue'
 import ControlsBar from './components/ControlsBar.vue'
 import SankeyChart from './components/SankeyChart.vue'
@@ -119,6 +127,40 @@ const { rows, totals, cumulativeSeries, ratioSeries, stockPanels } = useAggregat
   computed(() => snap.snapshot.value),
   computed(() => controls)
 )
+
+// ---- 切換讀取遮罩 ----
+// 「回大盤/下鑽族群/換日期」都會讓下面那幾個 computed(rows/cumulativeSeries/
+// ratioSeries/stockPanels...) 重新跑一次全量聚合，資料量大時這段是同步的
+// (瀏覽器主執行緒)，跑的當下畫面完全不會更新、看起來像當機。
+//
+// 因為 computed 是「懶算」的——改 controls.sector 那一刻本身不會馬上觸發計算，
+// 是等 Vue 接下來 re-render、樣板真的去讀這些 computed 的值時才會算——所以沒辦
+// 法直接包在改值那一行前後計時。這裡用「先讓遮罩真的畫到螢幕上，再讓重算發
+// 生」的方式：
+//   1. switching = true，等 nextTick() 讓這個變更 flush 進 DOM
+//   2. 用兩層 requestAnimationFrame 確保瀏覽器真的畫出這一幀(不只是排進 DOM，
+//      是實際 paint 到螢幕上)
+//   3. 這時候才真的去改 controls.sector 等值——重算就是在接下來這次 flush
+//      裡同步發生，但遮罩已經在畫面上了
+//   4. 再 nextTick() 等這次(會卡頓的)重新渲染完成，才把遮罩收掉
+const switching = ref(false)
+const switchingLabel = ref('')
+
+function paintFrame() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve))
+  })
+}
+
+async function runHeavyChange(label, mutate) {
+  switching.value = true
+  switchingLabel.value = label
+  await nextTick()
+  await paintFrame()
+  await mutate()
+  await nextTick()
+  switching.value = false
+}
 
 const selectedDate = ref('')
 const dateOptions = computed(() => {
@@ -165,8 +207,16 @@ async function init() {
 }
 
 async function onDateChange() {
-  controls.sector = null
-  await snap.open(selectedDate.value)
+  await runHeavyChange('切換日期中...', async () => {
+    controls.sector = null
+    await snap.open(selectedDate.value)
+  })
+}
+
+function returnToMarket() {
+  runHeavyChange('返回大盤中...', () => {
+    controls.sector = null
+  })
 }
 
 async function onLoggedIn() {
@@ -209,7 +259,9 @@ function onControlsUpdate(next) {
 function handleDrillDown(name) {
   if (!controls.sector) {
     // name 目前是「族群名稱」；如果是族群層點下去，就下鑽進該族群
-    controls.sector = name
+    runHeavyChange(`載入 ${name} 族群資料中...`, () => {
+      controls.sector = name
+    })
   }
 }
 
@@ -261,6 +313,42 @@ body {
 
 .page--drilled {
   align-items: stretch; /* 左右股票欄跟中間欄拉齊到一樣高 */
+}
+
+/* 固定滿版，不管 .page 目前多寬(下鑽後會變寬)都蓋得住整個畫面；z-index
+   拉高確保蓋過 glass-panel 那些卡片。 */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(15, 17, 26, 0.72);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #0ea5e9;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-text {
+  color: #cbd5e1;
+  font-size: 0.95rem;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .dashboard {
