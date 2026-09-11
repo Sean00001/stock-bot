@@ -50,6 +50,10 @@
     </div>
 
     <div class="main-content" :class="{ 'main-content--drilled': !!controls.sector }">
+      <!-- 下鑽之後，個股卡片依資金流向拆成左右兩欄，跟中間資金流向圖「左邊
+           被抽走、右邊流進去」的方向對齊，兩欄各自捲動、互不影響。 -->
+      <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="out" />
+
       <div class="left-panel glass-panel">
         <h3 class="panel-title">累積淨流入走勢 (可點擊線條下鑽)</h3>
         <LineChart
@@ -64,7 +68,7 @@
         <SankeyChart :flow-data="rows" @node-click="handleDrillDown" />
       </div>
 
-      <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" />
+      <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="in" />
     </div>
 
     <div class="ratio-row">
@@ -365,10 +369,10 @@ body {
 }
 
 .main-content--drilled {
-  /* 個股卡片那一欄(最右邊)原本只分到 1fr(整個 3.7fr 裡不到三成寬度)，
-     字都擠到要換行、疊字。加寬到跟左邊主圖差不多寬，卡片裡的文字才有
-     空間排成一行。 */
-  grid-template-columns: 1.2fr 1fr 1.3fr;
+  /* 下鑽後變成四欄：資金流出個股 | 累積淨流入走勢 | 資金流向圖 | 資金流入
+     個股，個股卡片欄跟中間兩張主圖的寬度比例抓 0.85 : 1.2 : 1 : 0.85，
+     卡片欄夠寬、文字才不會被擠得換行或疊字。 */
+  grid-template-columns: 0.85fr 1.2fr 1fr 0.85fr;
 }
 
 .left-panel,

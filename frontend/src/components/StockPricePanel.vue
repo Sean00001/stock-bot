@@ -1,20 +1,30 @@
 <template>
   <div class="price-panel glass-panel">
-    <h3 class="panel-title">{{ sectorLabel }} — 個股股價走勢</h3>
-    <div v-if="stocks.length" class="cards">
-      <StockPriceCard v-for="s in stocks" :key="s.code" v-bind="s" />
+    <h3 class="panel-title">{{ titleText }}</h3>
+    <div v-if="filtered.length" class="cards">
+      <StockPriceCard v-for="s in filtered" :key="s.code" v-bind="s" />
     </div>
-    <p v-else class="empty">這個族群目前還沒有可畫的股價資料。</p>
+    <p v-else class="empty">{{ side === 'out' ? '這個族群目前沒有資金流出的個股。' : '這個族群目前沒有資金流入的個股。' }}</p>
   </div>
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import StockPriceCard from './StockPriceCard.vue'
 
-defineProps({
+const props = defineProps({
   stocks: { type: Array, default: () => [] },
   sectorLabel: { type: String, default: '' },
+  // out = 資金流出(淨流入為負，畫在主圖左邊，對齊資金流向圖「資金被抽走」
+  // 那一側) / in = 資金流入(淨流入為正，畫在主圖右邊，對齊「資金流進去」)
+  side: { type: String, default: 'in' },
 })
+
+// stockPanels 本來就已經依 |大單以上淨流入| 由大到小排過序，這裡只是照方向
+// 篩選、不重新排序，維持「流向越明顯排越前面」的順序。
+const filtered = computed(() => props.stocks.filter((s) => (props.side === 'out' ? s.netAboveL < 0 : s.netAboveL >= 0)))
+
+const titleText = computed(() => `${props.sectorLabel} ${props.side === 'out' ? '資金流出' : '資金流入'}`)
 </script>
 
 <style scoped>
