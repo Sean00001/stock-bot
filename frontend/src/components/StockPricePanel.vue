@@ -28,17 +28,10 @@ const props = defineProps({
 // stockPanels 本來就已經依 |大單以上淨流入| 由大到小排過序；用交錯(下標
 // 奇偶)分配到左右兩側，讓兩邊都混得到排名靠前跟靠後的股票，數量也最多只
 // 差一檔，比單純切前半/後半更平均、不會有一邊都是大咖一邊都是小咖。
-
-// 每檔股票配一個固定顏色(依「這個族群裡的順序」對色盤取色，不分左右兩側，
-// 這樣同一檔股票不管排在左邊還右邊、色盤怎麼輪都拿到同一個顏色)，卡片背
-// 景會淡淡染上這個顏色。
-const PALETTE = ['#f97316', '#f59e0b', '#facc15', '#fb7185', '#38bdf8', '#818cf8', '#a3e635', '#94a3b8']
-
+// (卡片背景色現在統一固定，不再依股票配色，所以這裡不用再附加顏色欄位。)
 const filtered = computed(() => {
   const offset = props.side === 'right' ? 1 : 0
-  return props.stocks
-    .map((s, idx) => ({ ...s, accentColor: PALETTE[idx % PALETTE.length] }))
-    .filter((_, idx) => idx % 2 === offset)
+  return props.stocks.filter((_, idx) => idx % 2 === offset)
 })
 
 const titleText = computed(() => `${props.sectorLabel} 個股股價走勢`)

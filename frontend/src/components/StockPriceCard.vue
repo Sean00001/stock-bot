@@ -1,5 +1,5 @@
 <template>
-  <div class="price-card glass-panel" :style="cardStyle">
+  <div class="price-card glass-panel">
     <div class="card-header">
       <div class="name">{{ code }} {{ name }}</div>
       <div class="price-block">
@@ -31,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, shallowRef, onBeforeUnmount } from 'vue'
+import { ref, onMounted, watch, shallowRef, onBeforeUnmount } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps({
@@ -45,19 +45,7 @@ const props = defineProps({
   netAboveL: { type: Number, default: 0 },
   xlCount: { type: Number, default: 0 },
   lCount: { type: Number, default: 0 },
-  // 這檔股票專屬的顏色(由 StockPricePanel 依色盤配好傳進來)，卡片背景會
-  // 淡淡染上這個顏色，讓每張卡片一眼就能分辨、但不是整片實色。
-  accentColor: { type: String, default: '#38bdf8' },
 })
-
-// 疊在原本深色玻璃背景(rgba(30,41,59,0.7))上面的一層色調；之前 alpha 只有
-// 約 13%(hex '22')太淡，看起來跟中間圖表(Sankey 絲帶、折線)比起來太不飽和。
-// 這裡加深到約 40%(hex '66')，讓每張卡片的顏色更鮮明、一眼就能分辨，但還
-// 沒到整片實色蓋掉文字/圖表的程度。hex 後面加兩位當 alpha，現代瀏覽器的
-// 8 位 hex color 都支援，不用另外寫 hex→rgb 的轉換。
-const cardStyle = computed(() => ({
-  background: `linear-gradient(${props.accentColor}66, ${props.accentColor}66), rgba(30, 41, 59, 0.7)`,
-}))
 
 const chartRef = ref(null)
 const chartInstance = shallowRef(null)
@@ -255,6 +243,9 @@ function formatMoney(val) {
   flex-direction: column;
   gap: 10px;
   flex-shrink: 0;
+  /* 統一用這個純色深藍維當背景，不再依股票分顏色；直接寫在這裡(而不是
+     只靠 .glass-panel)、加 !important，確保不會被其他地方的樣式蓋掉。 */
+  background-color: #192231 !important;
 }
 
 .card-header {
