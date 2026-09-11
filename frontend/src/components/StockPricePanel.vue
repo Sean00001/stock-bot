@@ -48,7 +48,7 @@ const titleText = computed(() => `${props.sectorLabel} ${props.side === 'out' ? 
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   padding-right: 4px;
 }
 

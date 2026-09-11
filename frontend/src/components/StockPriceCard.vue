@@ -238,10 +238,10 @@ function formatMoney(val) {
 
 <style scoped>
 .price-card {
-  padding: 12px 16px;
+  padding: 16px 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   flex-shrink: 0;
 }
 
@@ -252,7 +252,7 @@ function formatMoney(val) {
 }
 
 .name {
-  font-size: 0.9rem;
+  font-size: 1rem;
   color: #e2e8f0;
   font-weight: 600;
 }
@@ -264,13 +264,13 @@ function formatMoney(val) {
 }
 
 .price {
-  font-size: 1.35rem;
+  font-size: 1.55rem;
   font-weight: 700;
   color: #f1f5f9;
 }
 
 .change {
-  font-size: 0.85rem;
+  font-size: 0.95rem;
   font-weight: 600;
 }
 
@@ -291,16 +291,16 @@ function formatMoney(val) {
 .chart-container {
   flex: 1;
   min-width: 0;
-  height: 120px;
+  height: 168px;
 }
 
 /* 現價用比較大的字直接印在圖表右側(跟卡片右下角圖表裡的參考點同一條
    水平線上)，取代原本畫在 echarts 裡面、比較不顯眼的浮動小標籤。 */
 .current-side {
   flex-shrink: 0;
-  width: 54px;
+  width: 64px;
   text-align: right;
-  font-size: 1rem;
+  font-size: 1.2rem;
   font-weight: 700;
   line-height: 1.2;
 }

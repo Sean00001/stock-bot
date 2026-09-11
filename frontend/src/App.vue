@@ -247,7 +247,7 @@ body {
 <style scoped>
 .dashboard {
   padding: 20px;
-  max-width: 1600px;
+  max-width: 1800px;
   margin: 0 auto;
 }
 
@@ -370,9 +370,11 @@ body {
 
 .main-content--drilled {
   /* 下鑽後變成四欄：資金流出個股 | 累積淨流入走勢 | 資金流向圖 | 資金流入
-     個股，個股卡片欄跟中間兩張主圖的寬度比例抓 0.85 : 1.2 : 1 : 0.85，
-     卡片欄夠寬、文字才不會被擠得換行或疊字。 */
-  grid-template-columns: 0.85fr 1.2fr 1fr 0.85fr;
+     個股。之前個股卡片欄只分到 0.85fr，卡片被壓得很扁；改成跟資金流向圖
+     同等寬(1fr)，卡片裡的圖表、字級才有足夠空間，不會看起來很擠。整排也
+     從固定 600px 拉高到 720px，讓卡片不用一直捲動。 */
+  grid-template-columns: 1fr 1.3fr 1.1fr 1fr;
+  height: 720px;
 }
 
 .left-panel,
