@@ -1,5 +1,5 @@
 <template>
-  <div class="price-card glass-panel">
+  <div class="price-card glass-panel" :style="cardStyle">
     <div class="card-header">
       <div class="name">{{ code }} {{ name }}</div>
       <div class="price-block">
@@ -31,7 +31,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, shallowRef, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, watch, shallowRef, onBeforeUnmount } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps({
@@ -45,7 +45,17 @@ const props = defineProps({
   netAboveL: { type: Number, default: 0 },
   xlCount: { type: Number, default: 0 },
   lCount: { type: Number, default: 0 },
+  // 這檔股票專屬的顏色(由 StockPricePanel 依色盤配好傳進來)，卡片背景會
+  // 淡淡染上這個顏色，讓每張卡片一眼就能分辨、但不是整片實色。
+  accentColor: { type: String, default: '#38bdf8' },
 })
+
+// 疊在原本深色玻璃背景(rgba(30,41,59,0.7))上面的一層低透明度色調；hex 後面
+// 加兩位當 alpha(約 13%)，現代瀏覽器的 8 位 hex color 都支援，不用另外寫
+// hex→rgb 的轉換。
+const cardStyle = computed(() => ({
+  background: `linear-gradient(${props.accentColor}22, ${props.accentColor}22), rgba(30, 41, 59, 0.7)`,
+}))
 
 const chartRef = ref(null)
 const chartInstance = shallowRef(null)
