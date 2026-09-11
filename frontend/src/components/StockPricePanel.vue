@@ -1,5 +1,9 @@
 <template>
-  <div class="price-panel glass-panel">
+  <!-- 這裡刻意不包一層 glass-panel 大框——每張 StockPriceCard 自己就是
+       一塊獨立方塊(它自己有 glass-panel)，外層再包一層的話，顏色/邊框太
+       接近，看起來會像全部悶在同一塊裡，而不是參考圖那種一塊一塊分開的
+       感覺。標題直接放在背景上，卡片之間單純用 gap 留間距。 -->
+  <div class="price-panel">
     <h3 class="panel-title">{{ titleText }}</h3>
     <div v-if="filtered.length" class="cards">
       <StockPriceCard v-for="s in filtered" :key="s.code" v-bind="s" />
@@ -34,7 +38,6 @@ const titleText = computed(() => `${props.sectorLabel} 個股股價走勢`)
 
 <style scoped>
 .price-panel {
-  padding: 20px;
   display: flex;
   flex-direction: column;
   min-height: 0;
