@@ -6,33 +6,43 @@
       <span class="sep" />
       <button class="chip" :class="{ active: count === 8 }" @click="count = 8">8 條</button>
       <button class="chip" :class="{ active: count === 4 }" @click="count = 4">4 條</button>
+      <span class="grow" />
+      <button class="chip" @click="toggleExpand">{{ expanded ? '⤡ 還原' : '⤢ 放大檢視' }}</button>
     </div>
-    <div class="chart-row">
-      <div class="chart-container" ref="chartRef"></div>
-      <!-- 排行清單：跟線本身脫鉤，不管線畫在哪、擠不擠，每一列永遠是固定
-           高度、永遠讀得到、永遠是好點的一大塊。滑鼠移過去會連動圖表把
-           那條線點亮(跟以前滑鼠移到線/端點標籤上一樣的效果)，直接點下去
-           跟點線本身一樣會下鑽。 -->
-      <div class="legend-list">
-        <div
-          v-for="name in legendNames"
-          :key="name"
-          class="legend-row"
-          @mouseenter="onLegendHover(name)"
-          @mouseleave="onLegendLeave"
-          @click="onLegendClick(name)"
-        >
-          <span class="dot" :style="{ background: colorOf(name) }" />
-          <span class="legend-name" :title="name">{{ name }}</span>
-          <span class="legend-value" :style="{ color: colorOf(name) }">{{ fmtMoney(finalValueOf(name)) }}</span>
+    <!-- disabled="!expanded" 表示平常這段內容就照原位置畫在卡片裡；一放大，
+         整段(含圖表跟排行清單)直接搬到 <body> 底下變成全螢幕的浮層，圖表
+         本身拿到的實際像素高度變超大，symlog 壓縮過的線之間才有更多空間
+         可以攤開，不用再調整 SYMLOG_C 這個係數。用 Teleport 搬移、不是整個
+         重新建立 DOM，所以裡面的 echarts 實例不會被打斷、資料也不用重畫。 -->
+    <Teleport to="body" :disabled="!expanded">
+      <div :class="['chart-row', { 'chart-row--expanded': expanded }]">
+        <button v-if="expanded" class="close-btn" @click="toggleExpand" title="關閉">✕</button>
+        <div class="chart-container" ref="chartRef"></div>
+        <!-- 排行清單：跟線本身脫鉤，不管線畫在哪、擠不擠，每一列永遠是固定
+             高度、永遠讀得到、永遠是好點的一大塊。滑鼠移過去會連動圖表把
+             那條線點亮(跟以前滑鼠移到線/端點標籤上一樣的效果)，直接點下去
+             跟點線本身一樣會下鑽。 -->
+        <div class="legend-list">
+          <div
+            v-for="name in legendNames"
+            :key="name"
+            class="legend-row"
+            @mouseenter="onLegendHover(name)"
+            @mouseleave="onLegendLeave"
+            @click="onLegendClick(name)"
+          >
+            <span class="dot" :style="{ background: colorOf(name) }" />
+            <span class="legend-name" :title="name">{{ name }}</span>
+            <span class="legend-value" :style="{ color: colorOf(name) }">{{ fmtMoney(finalValueOf(name)) }}</span>
+          </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch, shallowRef, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, nextTick, watch, shallowRef, computed } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps({
@@ -53,6 +63,30 @@ const chartRef = ref(null)
 const chartInstance = shallowRef(null)
 const mode = ref('both') // both | inflow
 const count = ref(8)
+const expanded = ref(false)
+
+function toggleExpand() {
+  expanded.value = !expanded.value
+}
+
+// 放大/還原改變的是容器的 CSS 尺寸，echarts 不會自動偵測到，要手動叫它
+// 重新量測一次，不然圖會維持舊的大小、或整個變空白。等 DOM 真的套用新
+// class、量出新尺寸之後(nextTick)才能 resize，不然量到的還是切換前的舊值。
+// 順便在放大時鎖住背景捲動、按 Esc 可以直接關閉，體驗跟一般的全螢幕彈窗
+// 一致。
+watch(expanded, (isExpanded) => {
+  document.body.style.overflow = isExpanded ? 'hidden' : ''
+  nextTick(() => chartInstance.value?.resize())
+})
+
+function onKeydown(e) {
+  if (e.key === 'Escape' && expanded.value) expanded.value = false
+}
+
+onBeforeUnmount(() => {
+  document.body.style.overflow = ''
+  window.removeEventListener('keydown', onKeydown)
+})
 
 const palette = ['#f97316', '#f59e0b', '#facc15', '#fb7185', '#38bdf8', '#818cf8', '#a3e635', '#94a3b8']
 
@@ -74,6 +108,7 @@ onMounted(() => {
     if (params.seriesName) emit('line-click', params.seriesName)
   })
   window.addEventListener('resize', () => chartInstance.value?.resize())
+  window.addEventListener('keydown', onKeydown)
   renderChart()
 })
 
@@ -264,11 +299,45 @@ function renderChart() {
   font-weight: 600;
 }
 
+.grow {
+  flex: 1;
+}
+
 .chart-row {
   display: flex;
   flex: 1;
   min-height: 0;
   gap: 10px;
+  position: relative;
+}
+
+.chart-row--expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #0b0e14;
+  padding: 24px 32px;
+  gap: 16px;
+}
+
+.close-btn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.close-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .chart-container {
