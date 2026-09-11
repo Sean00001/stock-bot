@@ -100,6 +100,11 @@ function renderChart() {
     type: 'line',
     showSymbol: false,
     smooth: true,
+    cursor: 'pointer',
+    // 預設 echarts 的折線只有資料點(節點)本身可以觸發滑鼠事件，線段中間
+    // 完全不會反應點擊。開這個之後整條線(包含兩個資料點之間的線段)都算
+    // 在點擊/hover 的命中範圍內，才能做到「點線上任何一點都能下鑽」。
+    triggerLineEvent: true,
     lineStyle: { width: 2 },
     itemStyle: { color: palette[idx % palette.length] },
     data: props.cumulative.series[name],
@@ -109,6 +114,13 @@ function renderChart() {
       color: 'inherit',
       fontSize: 11,
       lineHeight: 14,
+    },
+    // 很多條線的終點擠在同一個 x 位置時，端點標籤本來會直接疊在一起。
+    // moveOverlap: 'shiftY' 是 echarts 內建的標籤防重疊排版，偵測到標籤
+    // 互相蓋到時會自動把它們沿 Y 軸推開、改用一小段牽引線連回真正的
+    // 資料點，效果跟參考站那種標籤自動分散、不互相遮擋的作法一樣。
+    labelLayout: {
+      moveOverlap: 'shiftY',
     },
     emphasis: {
       focus: 'series',
