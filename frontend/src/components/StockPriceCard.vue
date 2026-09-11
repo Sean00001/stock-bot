@@ -9,14 +9,17 @@
         </span>
       </div>
     </div>
-    <div class="chart-wrap">
+    <div class="chart-row">
       <div class="chart-container" ref="chartRef"></div>
-      <button class="mode-btn" @click="toggleMode">{{ mode === 'line' ? 'K線' : '走勢' }}</button>
+      <div class="current-side" :class="(changePct ?? 0) >= 0 ? 'up' : 'down'">
+        {{ lastPrice != null ? lastPrice.toFixed(2) : '—' }}
+      </div>
     </div>
     <div class="card-footer">
       <div class="foot-row">
         <span class="foot-label">大單以上淨流入</span>
         <span class="foot-value" :class="netAboveL >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(netAboveL) }}</span>
+        <button class="mode-btn" @click="toggleMode">{{ mode === 'line' ? 'K線' : '走勢' }}</button>
       </div>
       <div class="foot-row small">
         <span>特大單 {{ xlCount.toLocaleString() }} 筆</span>
@@ -92,8 +95,9 @@ function buildCandles(pts, targetBars = 40) {
   return out
 }
 
-// 現價旁邊那個小標籤(深底白字)＋一條淺藍色的參考線，標出目前線畫到哪個
-// 位置，兩種模式共用同一套設定，只是 xAxis 的最後一個索引值不同。
+// 現價點 + 一條參考線，標出目前線畫到哪個位置；顏色跟著漲跌走(紅漲綠跌)，
+// 跟卡片右側另外用 HTML 畫的大字現價互相呼應。數字本身改由 .current-side
+// 顯示，這裡不再重複畫一次浮動標籤。
 function currentMarkerSeries(lastIndex, lastVal, color) {
   return {
     type: 'scatter',
@@ -102,22 +106,11 @@ function currentMarkerSeries(lastIndex, lastVal, color) {
     itemStyle: { color },
     silent: true,
     z: 5,
-    label: {
-      show: true,
-      formatter: () => lastVal.toFixed(2),
-      position: 'right',
-      distance: 6,
-      color: '#fff',
-      fontSize: 10,
-      padding: [2, 5],
-      borderRadius: 3,
-      backgroundColor: 'rgba(15, 23, 42, 0.9)',
-    },
     markLine: {
       symbol: 'none',
       silent: true,
       label: { show: false },
-      lineStyle: { color: '#38bdf8', width: 1, type: 'solid', opacity: 0.6 },
+      lineStyle: { color, width: 1, type: 'dashed', opacity: 0.7 },
       data: [{ xAxis: lastIndex }],
     },
   }
@@ -133,9 +126,9 @@ function renderChart() {
   const markerColor = (props.changePct ?? 0) >= 0 ? upColor : downColor
 
   let option
-  // 右邊要留給現價標籤的位置，不然標籤會被裁掉(跟累積淨流入走勢圖那次
-  // 端點標籤被截斷是同一種問題)。
-  const grid = { left: 2, right: 46, top: 8, bottom: 2 }
+  // 現價數字已經移到圖表右側的 .current-side 用 HTML 畫，圖表本身不用再
+  // 留空間給內部標籤，右邊留一點點邊界避免參考線被裁到就好。
+  const grid = { left: 2, right: 6, top: 8, bottom: 2 }
 
   if (mode.value === 'candle') {
     const candles = buildCandles(pts)
@@ -289,19 +282,39 @@ function formatMoney(val) {
   color: #34d399;
 }
 
-.chart-wrap {
-  position: relative;
+.chart-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .chart-container {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 120px;
 }
 
+/* 現價用比較大的字直接印在圖表右側(跟卡片右下角圖表裡的參考點同一條
+   水平線上)，取代原本畫在 echarts 裡面、比較不顯眼的浮動小標籤。 */
+.current-side {
+  flex-shrink: 0;
+  width: 54px;
+  text-align: right;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.current-side.up {
+  color: #fb7185;
+}
+
+.current-side.down {
+  color: #34d399;
+}
+
 .mode-btn {
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
+  flex-shrink: 0;
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: #94a3b8;
@@ -325,10 +338,16 @@ function formatMoney(val) {
 
 .foot-row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   font-size: 0.78rem;
   color: #94a3b8;
+}
+
+.foot-row .foot-value {
+  margin-right: auto;
+  padding-left: 8px;
 }
 
 /* 之前欄位太窄時，「大單以上淨流入」這種中文標籤會被硬拆成一個字一行
