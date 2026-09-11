@@ -1,93 +1,96 @@
 <template>
   <Login v-if="!auth.state.checked || !auth.state.authenticated" @logged-in="onLoggedIn" />
 
-  <div v-else class="dashboard">
-    <header class="top-bar glass-panel">
-      <div class="logo">
-        <h1 v-if="!controls.sector">盤中資金流向・逐筆 (全市場)</h1>
-        <h1 v-else @click="controls.sector = null" style="cursor: pointer; color: #0ea5e9">
-          &larr; 返回大盤 | {{ controls.sector }} 族群資金流向
-        </h1>
+  <!-- 下鑽後左右加開個股卡片欄，是「外掛」在整個原本畫面(.dashboard)的左右
+       兩側，讓整頁變寬；.dashboard 內部(標題、控制列、統計方塊、兩張主圖、
+       比例圖)維持跟未下鑽時一模一樣的寬度，不會因為多了卡片而被壓縮。 -->
+  <div v-else class="page" :class="{ 'page--drilled': !!controls.sector }">
+    <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="left" />
+
+    <div class="dashboard">
+      <header class="top-bar glass-panel">
+        <div class="logo">
+          <h1 v-if="!controls.sector">盤中資金流向・逐筆 (全市場)</h1>
+          <h1 v-else @click="controls.sector = null" style="cursor: pointer; color: #0ea5e9">
+            &larr; 返回大盤 | {{ controls.sector }} 族群資金流向
+          </h1>
+        </div>
+
+        <div class="date-control">
+          <select v-model="selectedDate" @change="onDateChange">
+            <option v-for="d in dateOptions" :key="d" :value="d">{{ d }}</option>
+          </select>
+          <span class="status-tag" :class="snap.status.value">{{ statusLabel }}</span>
+          <span class="asof" v-if="snap.snapshot.value">更新於 {{ formatAsof(snap.snapshot.value.asof) }}</span>
+          <button class="logout" @click="onLogout">登出</button>
+        </div>
+      </header>
+
+      <ControlsBar :model-value="controls" @update:model-value="onControlsUpdate" />
+
+      <div class="stats-bar">
+        <div class="stat-box glass-panel">
+          <div class="label">族群/個股成交值</div>
+          <div class="value">{{ formatMoney(totals.amount) }}</div>
+        </div>
+        <div class="stat-box glass-panel">
+          <div class="label">淨流入總計</div>
+          <div class="value" :class="totals.net >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net) }}</div>
+        </div>
+        <div class="stat-box glass-panel">
+          <div class="label">特大單</div>
+          <div class="value" :class="totals.net_xl >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_xl) }}</div>
+        </div>
+        <div class="stat-box glass-panel">
+          <div class="label">大單</div>
+          <div class="value" :class="totals.net_l >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_l) }}</div>
+        </div>
+        <div class="stat-box glass-panel">
+          <div class="label">中單</div>
+          <div class="value" :class="totals.net_m >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_m) }}</div>
+        </div>
+        <div class="stat-box glass-panel">
+          <div class="label">小單</div>
+          <div class="value" :class="totals.net_s >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_s) }}</div>
+        </div>
       </div>
 
-      <div class="date-control">
-        <select v-model="selectedDate" @change="onDateChange">
-          <option v-for="d in dateOptions" :key="d" :value="d">{{ d }}</option>
-        </select>
-        <span class="status-tag" :class="snap.status.value">{{ statusLabel }}</span>
-        <span class="asof" v-if="snap.snapshot.value">更新於 {{ formatAsof(snap.snapshot.value.asof) }}</span>
-        <button class="logout" @click="onLogout">登出</button>
-      </div>
-    </header>
+      <div class="main-content">
+        <div class="left-panel glass-panel">
+          <h3 class="panel-title">累積淨流入走勢 (可點擊線條下鑽)</h3>
+          <LineChart
+            :cumulative="cumulativeSeries"
+            :market-open-ts="snap.snapshot.value?.marketOpenTs || 0"
+            @line-click="handleDrillDown"
+          />
+        </div>
 
-    <ControlsBar :model-value="controls" @update:model-value="onControlsUpdate" />
+        <div class="right-panel glass-panel">
+          <h3 class="panel-title">資金流向圖 (可點擊區塊與線條下鑽)</h3>
+          <SankeyChart :flow-data="rows" @node-click="handleDrillDown" />
+        </div>
+      </div>
 
-    <div class="stats-bar">
-      <div class="stat-box glass-panel">
-        <div class="label">族群/個股成交值</div>
-        <div class="value">{{ formatMoney(totals.amount) }}</div>
+      <div class="ratio-row">
+        <div class="ratio-panel glass-panel">
+          <h3 class="panel-title">淨流入占成交值比走勢 (可點擊線條下鑽)</h3>
+          <RatioChart
+            :ratio="ratioSeries"
+            :market-open-ts="snap.snapshot.value?.marketOpenTs || 0"
+            @line-click="handleDrillDown"
+          />
+        </div>
       </div>
-      <div class="stat-box glass-panel">
-        <div class="label">淨流入總計</div>
-        <div class="value" :class="totals.net >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net) }}</div>
-      </div>
-      <div class="stat-box glass-panel">
-        <div class="label">特大單</div>
-        <div class="value" :class="totals.net_xl >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_xl) }}</div>
-      </div>
-      <div class="stat-box glass-panel">
-        <div class="label">大單</div>
-        <div class="value" :class="totals.net_l >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_l) }}</div>
-      </div>
-      <div class="stat-box glass-panel">
-        <div class="label">中單</div>
-        <div class="value" :class="totals.net_m >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_m) }}</div>
-      </div>
-      <div class="stat-box glass-panel">
-        <div class="label">小單</div>
-        <div class="value" :class="totals.net_s >= 0 ? 'text-blue' : 'text-red'">{{ formatMoney(totals.net_s) }}</div>
-      </div>
+
+      <p v-if="snap.status.value === 'error'" class="error-banner">
+        資料讀取失敗：{{ snap.errorMsg.value }}
+      </p>
+      <p v-else-if="snap.status.value === 'not_found'" class="error-banner">
+        {{ selectedDate }} 還沒有資金流向資料（worker 可能還沒跑，或這天沒開盤）。
+      </p>
     </div>
 
-    <div class="main-content" :class="{ 'main-content--drilled': !!controls.sector }">
-      <!-- 下鑽之後，個股卡片依資金流向拆成左右兩欄，跟中間資金流向圖「左邊
-           被抽走、右邊流進去」的方向對齊，兩欄各自捲動、互不影響。 -->
-      <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="out" />
-
-      <div class="left-panel glass-panel">
-        <h3 class="panel-title">累積淨流入走勢 (可點擊線條下鑽)</h3>
-        <LineChart
-          :cumulative="cumulativeSeries"
-          :market-open-ts="snap.snapshot.value?.marketOpenTs || 0"
-          @line-click="handleDrillDown"
-        />
-      </div>
-
-      <div class="right-panel glass-panel">
-        <h3 class="panel-title">資金流向圖 (可點擊區塊與線條下鑽)</h3>
-        <SankeyChart :flow-data="rows" @node-click="handleDrillDown" />
-      </div>
-
-      <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="in" />
-    </div>
-
-    <div class="ratio-row">
-      <div class="ratio-panel glass-panel">
-        <h3 class="panel-title">淨流入占成交值比走勢 (可點擊線條下鑽)</h3>
-        <RatioChart
-          :ratio="ratioSeries"
-          :market-open-ts="snap.snapshot.value?.marketOpenTs || 0"
-          @line-click="handleDrillDown"
-        />
-      </div>
-    </div>
-
-    <p v-if="snap.status.value === 'error'" class="error-banner">
-      資料讀取失敗：{{ snap.errorMsg.value }}
-    </p>
-    <p v-else-if="snap.status.value === 'not_found'" class="error-banner">
-      {{ selectedDate }} 還沒有資金流向資料（worker 可能還沒跑，或這天沒開盤）。
-    </p>
+    <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="right" />
   </div>
 </template>
 
@@ -245,10 +248,25 @@ body {
 </style>
 
 <style scoped>
-.dashboard {
+/* .page 是最外層：平常(未下鑽)就只有 .dashboard 一個小孩，跟以前效果一樣；
+   下鑽後左右多兩個 StockPricePanel 當手足，用 flex 排成一列，.dashboard
+   本身寬度、內部版面完全不受影響，整頁自然變寬。 */
+.page {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
   padding: 20px;
-  max-width: 1800px;
-  margin: 0 auto;
+}
+
+.page--drilled {
+  align-items: stretch; /* 左右股票欄跟中間欄拉齊到一樣高 */
+}
+
+.dashboard {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 1600px;
 }
 
 .glass-panel {
@@ -362,19 +380,12 @@ body {
 }
 
 .main-content {
+  /* 不管有沒有下鑽，這一排永遠是固定的 2fr : 1fr，不會因為左右多了個股
+     卡片欄就被壓縮——個股卡片是外掛在 .dashboard 外面，跟這裡無關。 */
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 20px;
   height: 600px;
-}
-
-.main-content--drilled {
-  /* 下鑽後變成四欄：資金流出個股 | 累積淨流入走勢 | 資金流向圖 | 資金流入
-     個股。之前個股卡片欄只分到 0.85fr，卡片被壓得很扁；改成跟資金流向圖
-     同等寬(1fr)，卡片裡的圖表、字級才有足夠空間，不會看起來很擠。整排也
-     從固定 600px 拉高到 720px，讓卡片不用一直捲動。 */
-  grid-template-columns: 1fr 1.3fr 1.1fr 1fr;
-  height: 720px;
 }
 
 .left-panel,
@@ -383,6 +394,15 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+/* StockPricePanel 是 .page 底下跟 .dashboard 平行的手足欄位，這裡用它元件
+   根節點自帶的 .price-panel class 直接定寬(Vue scoped CSS 對「模板裡直接
+   寫的子元件」也會把父層的 scope 屬性一起蓋上去，所以這樣寫得到)。固定寬
+   度 + 跟 .dashboard 一樣高，個股卡片才有足夠空間不會被壓扁。 */
+.price-panel {
+  flex: 0 0 320px;
+  max-width: 320px;
 }
 
 .panel-title {
@@ -413,8 +433,15 @@ body {
 }
 
 @media (max-width: 1100px) {
-  .main-content,
-  .main-content--drilled {
+  .page {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .price-panel {
+    flex: 0 0 auto;
+    max-width: none;
+  }
+  .main-content {
     grid-template-columns: 1fr;
     height: auto;
   }
