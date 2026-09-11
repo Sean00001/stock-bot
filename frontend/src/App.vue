@@ -365,7 +365,10 @@ body {
 }
 
 .main-content--drilled {
-  grid-template-columns: 1.5fr 1.2fr 1fr;
+  /* 個股卡片那一欄(最右邊)原本只分到 1fr(整個 3.7fr 裡不到三成寬度)，
+     字都擠到要換行、疊字。加寬到跟左邊主圖差不多寬，卡片裡的文字才有
+     空間排成一行。 */
+  grid-template-columns: 1.2fr 1fr 1.3fr;
 }
 
 .left-panel,

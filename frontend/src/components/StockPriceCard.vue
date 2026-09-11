@@ -181,7 +181,7 @@ function formatMoney(val) {
 
 .chart-container {
   width: 100%;
-  height: 90px;
+  height: 120px;
 }
 
 .card-footer {
@@ -193,8 +193,18 @@ function formatMoney(val) {
 .foot-row {
   display: flex;
   justify-content: space-between;
+  gap: 8px;
   font-size: 0.78rem;
   color: #94a3b8;
+}
+
+/* 之前欄位太窄時，「大單以上淨流入」這種中文標籤會被硬拆成一個字一行
+   (瀏覽器對中文的預設斷行規則是逐字斷)，看起來像亂碼。改成不允許在
+   文字中間斷行，欄位夠寬的話就是一行；就算哪天欄位又變窄，也只會整串
+   一起換到下一行，不會再拆得亂七八糟。 */
+.foot-label,
+.foot-value {
+  white-space: nowrap;
 }
 
 .foot-row.small {
