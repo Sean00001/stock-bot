@@ -7,7 +7,27 @@
       <button class="chip" :class="{ active: count === 8 }" @click="count = 8">8 條</button>
       <button class="chip" :class="{ active: count === 4 }" @click="count = 4">4 條</button>
     </div>
-    <div class="chart-container" ref="chartRef"></div>
+    <div class="chart-row">
+      <div class="chart-container" ref="chartRef"></div>
+      <!-- 排行清單：跟線本身脫鉤，不管線畫在哪、擠不擠，每一列永遠是固定
+           高度、永遠讀得到、永遠是好點的一大塊。滑鼠移過去會連動圖表把
+           那條線點亮(跟以前滑鼠移到線/端點標籤上一樣的效果)，直接點下去
+           跟點線本身一樣會下鑽。 -->
+      <div class="legend-list">
+        <div
+          v-for="name in legendNames"
+          :key="name"
+          class="legend-row"
+          @mouseenter="onLegendHover(name)"
+          @mouseleave="onLegendLeave"
+          @click="onLegendClick(name)"
+        >
+          <span class="dot" :style="{ background: colorOf(name) }" />
+          <span class="legend-name" :title="name">{{ name }}</span>
+          <span class="legend-value" :style="{ color: colorOf(name) }">{{ fmtMoney(finalValueOf(name)) }}</span>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -34,6 +54,20 @@ const chartInstance = shallowRef(null)
 const mode = ref('both') // both | inflow
 const count = ref(8)
 
+const palette = ['#f97316', '#f59e0b', '#facc15', '#fb7185', '#38bdf8', '#818cf8', '#a3e635', '#94a3b8']
+
+function finalValueOf(name) {
+  const arr = props.cumulative.series[name]
+  return arr && arr.length ? arr[arr.length - 1] : 0
+}
+
+function fmtMoney(val) {
+  return (
+    (val > 0 ? '+' : '') +
+    (Math.abs(val) >= 100000000 ? (val / 100000000).toFixed(1) + '億' : (val / 10000).toFixed(0) + '萬')
+  )
+}
+
 onMounted(() => {
   chartInstance.value = echarts.init(chartRef.value, 'dark')
   chartInstance.value.on('click', (params) => {
@@ -46,10 +80,6 @@ onMounted(() => {
 // 依目前最終累積值排序，挑出流入前 N/2、流出前 N/2 (只看流入模式則全部給流入)
 const highlighted = computed(() => {
   const names = Object.keys(props.cumulative.series || {})
-  const finalValueOf = (name) => {
-    const arr = props.cumulative.series[name]
-    return arr && arr.length ? arr[arr.length - 1] : 0
-  }
   const sorted = names.slice().sort((a, b) => finalValueOf(b) - finalValueOf(a))
   const half = Math.max(1, Math.floor(count.value / 2))
 
@@ -64,6 +94,35 @@ const highlighted = computed(() => {
   return [...top, ...bottom]
 })
 
+// 圖表裡每條線的顏色跟排行清單裡色點/數字的顏色，共用同一份對照表，兩邊
+// 永遠對得起來。
+const colorMap = computed(() => {
+  const map = {}
+  highlighted.value.forEach((name, idx) => {
+    map[name] = palette[idx % palette.length]
+  })
+  return map
+})
+function colorOf(name) {
+  return colorMap.value[name] || '#94a3b8'
+}
+
+// 排行清單固定用「由高到低」單一排序(流入最多排最上面、流出最多排最下
+// 面)，不管線在圖上實際畫到哪個高度，清單本身永遠是這個順序、永遠等高。
+const legendNames = computed(() => highlighted.value.slice().sort((a, b) => finalValueOf(b) - finalValueOf(a)))
+
+function onLegendHover(name) {
+  if (!chartInstance.value) return
+  chartInstance.value.dispatchAction({ type: 'downplay' })
+  chartInstance.value.dispatchAction({ type: 'highlight', seriesName: name })
+}
+function onLegendLeave() {
+  chartInstance.value?.dispatchAction({ type: 'downplay' })
+}
+function onLegendClick(name) {
+  emit('line-click', name)
+}
+
 function formatClock(offsetSec) {
   const base = props.marketOpenTs ? props.marketOpenTs * 1000 : 0
   const d = new Date(base + offsetSec * 1000)
@@ -74,13 +133,10 @@ function formatClock(offsetSec) {
 
 // 這張圖常常同時有一條爆量的族群(例如晶圓代工 -2000多億)跟一群擠在 0 附近
 // 的族群(其他大部分族群通常在 ±500 億內)。如果 Y 軸照原始金額線性畫，
-// 那條爆量的線會把軸拉得很長，其餘那一群線跟標籤全部被壓縮在軸的一小段
-// 裡，不管標籤防重疊做得多好都還是會看起來很擠——因為根本沒有像素空間
-// 可以分。這裡改用「symlog」(對稱對數)座標：數值越大，被壓縮得越多；
-// 越接近 0，越接近原始線性比例。這樣那群小數值的線就能分到多好幾倍的
-// 顯示空間，爆量的那條依然看得到、只是跟其他線的距離不會再誇張到把整
-// 群其他線都擠死。SYMLOG_C 是「多大金額以內大致還算線性」的門檻，數字
-// 越小壓縮越激烈；覺得還是太擠或壓太過頭，調這個常數就好。
+// 那條爆量的線會把軸拉得很長，其餘那一群線全部被壓縮在軸的一小段裡。
+// 這裡改用「symlog」(對稱對數)座標：數值越大，被壓縮得越多；越接近 0，
+// 越接近原始線性比例。SYMLOG_C 是「多大金額以內大致還算線性」的門檻，
+// 數字越小壓縮越激烈。
 const SYMLOG_C = 5e9 // 50 億
 function symlogForward(v) {
   return Math.sign(v) * Math.log10(1 + Math.abs(v) / SYMLOG_C)
@@ -102,16 +158,11 @@ function renderChart() {
   if (!times.length) return
 
   const names = highlighted.value
-  const palette = ['#f97316', '#f59e0b', '#facc15', '#fb7185', '#38bdf8', '#818cf8', '#a3e635', '#94a3b8']
 
-  // 端點標籤直接標在每條線自己的終點旁邊（名稱+數值），取代原本另一個獨立的
-  // 圖例清單——這樣標籤位置天生對齊那條線實際畫到哪裡，不用在圖例跟線之間
-  // 來回對照。滑鼠移到線本身或這個端點標籤上都會觸發 emphasis，把其他線
-  // 變暗(blur)，方便在很多條線擠在一起時找到特定一條，跟參考站同樣的互動。
-  const fmtMoney = (val) =>
-    (val > 0 ? '+' : '') +
-    (Math.abs(val) >= 100000000 ? (val / 100000000).toFixed(1) + '億' : (val / 10000).toFixed(0) + '萬')
-
+  // 名稱＋數值改到圖表外面的排行清單顯示(見上方 legendNames)，這裡的線
+  // 本身不再需要端點文字標籤——不管幾條線擠在哪個位置，都不會再互相疊字。
+  // 滑鼠移到線本身或排行清單的那一列都會觸發 emphasis，把其他線變暗
+  // (blur)，方便在很多條線擠在一起時找到特定一條。
   const series = names.map((name, idx) => ({
     name,
     type: 'line',
@@ -124,31 +175,16 @@ function renderChart() {
     triggerLineEvent: true,
     lineStyle: { width: 2 },
     itemStyle: { color: palette[idx % palette.length] },
-    // 畫在圖上的是 symlog 壓縮過的座標，不是原始金額——文字標籤、
-    // tooltip、Y 軸刻度顯示的時候都要用 symlogInverse() 換算回真正的
-    // 金額，不然使用者看到的數字會是錯的。
+    // 畫在圖上的是 symlog 壓縮過的座標，不是原始金額——tooltip、Y 軸刻度
+    // 顯示的時候都要用 symlogInverse() 換算回真正的金額，不然使用者看到
+    // 的數字會是錯的。排行清單則是直接用原始金額，跟這裡的轉換無關。
     data: (props.cumulative.series[name] || []).map(symlogForward),
-    endLabel: {
-      show: true,
-      formatter: (params) => `${params.seriesName}\n${fmtMoney(symlogInverse(params.value))}`,
-      color: 'inherit',
-      fontSize: 11,
-      lineHeight: 14,
-    },
-    // 很多條線的終點擠在同一個 x 位置時，端點標籤本來會直接疊在一起。
-    // moveOverlap: 'shiftY' 是 echarts 內建的標籤防重疊排版，偵測到標籤
-    // 互相蓋到時會自動把它們沿 Y 軸推開、改用一小段牽引線連回真正的
-    // 資料點，效果跟參考站那種標籤自動分散、不互相遮擋的作法一樣。
-    labelLayout: {
-      moveOverlap: 'shiftY',
-    },
     emphasis: {
       focus: 'series',
       lineStyle: { width: 3 },
     },
     blur: {
       lineStyle: { opacity: 0.12 },
-      endLabel: { opacity: 0.25 },
     },
   }))
 
@@ -161,7 +197,7 @@ function renderChart() {
         return Math.abs(real) >= 100000000 ? (real / 100000000).toFixed(2) + ' 億' : (real / 10000).toFixed(2) + ' 萬'
       },
     },
-    grid: { left: '5%', right: '19%', bottom: '10%', top: '5%', containLabel: true },
+    grid: { left: '5%', right: '4%', bottom: '10%', top: '5%', containLabel: true },
     xAxis: {
       type: 'category',
       data: times.map(formatClock),
@@ -228,9 +264,62 @@ function renderChart() {
   font-weight: 600;
 }
 
-.chart-container {
-  width: 100%;
+.chart-row {
+  display: flex;
   flex: 1;
   min-height: 0;
+  gap: 10px;
+}
+
+.chart-container {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.legend-list {
+  width: 152px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.legend-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+}
+
+.legend-value {
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 </style>
