@@ -15,10 +15,15 @@
 <script setup>
 import { computed } from 'vue'
 import StockPriceCard from './StockPriceCard.vue'
+import { FALLBACK_COLOR } from '../lib/stockColors'
 
 const props = defineProps({
   stocks: { type: Array, default: () => [] },
   sectorLabel: { type: String, default: '' },
+  // 股票代號+名稱(跟 stocks 裡的 code+name 拼法一致) -> 顏色的對照表，從
+  // App.vue 算好傳進來(見 lib/stockColors.js)，跟「累積淨流入走勢」圖例
+  // 共用同一套配色邏輯，同一檔股票在兩邊顏色才會一致。
+  colorMap: { type: Object, default: () => ({}) },
   // left / right：純粹拿來把同一份股票清單平均分成兩半，跟資金流入/流出
   // 方向無關——不然像「電信」這種族群常常只有一兩檔在流出，硬要依方向分
   // 左右的話，某一邊會只剩一檔、看起來很空。
@@ -28,16 +33,10 @@ const props = defineProps({
 // stockPanels 本來就已經依 |大單以上淨流入| 由大到小排過序；用交錯(下標
 // 奇偶)分配到左右兩側，讓兩邊都混得到排名靠前跟靠後的股票，數量也最多只
 // 差一檔，比單純切前半/後半更平均、不會有一邊都是大咖一邊都是小咖。
-
-// 每檔股票配一個固定顏色(依「這個族群裡的順序」對色盤取色，不分左右兩側，
-// 這樣同一檔股票不管排在左邊還右邊、色盤怎麼輪都拿到同一個顏色)，色盤跟
-// 累積淨流入走勢圖的圖例是同一套，卡片背景會淡淡染上這個顏色。
-const PALETTE = ['#f97316', '#f59e0b', '#facc15', '#fb7185', '#38bdf8', '#818cf8', '#a3e635', '#94a3b8']
-
 const filtered = computed(() => {
   const offset = props.side === 'right' ? 1 : 0
   return props.stocks
-    .map((s, idx) => ({ ...s, accentColor: PALETTE[idx % PALETTE.length] }))
+    .map((s) => ({ ...s, accentColor: props.colorMap[`${s.code} ${s.name}`] || FALLBACK_COLOR }))
     .filter((_, idx) => idx % 2 === offset)
 })
 

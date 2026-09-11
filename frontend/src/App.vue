@@ -5,7 +5,13 @@
        兩側，讓整頁變寬；.dashboard 內部(標題、控制列、統計方塊、兩張主圖、
        比例圖)維持跟未下鑽時一模一樣的寬度，不會因為多了卡片而被壓縮。 -->
   <div v-else class="page" :class="{ 'page--drilled': !!controls.sector }">
-    <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="left" />
+    <StockPricePanel
+      v-if="controls.sector"
+      :stocks="stockPanels"
+      :sector-label="controls.sector"
+      :color-map="stockColorMap"
+      side="left"
+    />
 
     <div class="dashboard">
       <header class="top-bar glass-panel">
@@ -90,7 +96,13 @@
       </p>
     </div>
 
-    <StockPricePanel v-if="controls.sector" :stocks="stockPanels" :sector-label="controls.sector" side="right" />
+    <StockPricePanel
+      v-if="controls.sector"
+      :stocks="stockPanels"
+      :sector-label="controls.sector"
+      :color-map="stockColorMap"
+      side="right"
+    />
   </div>
 </template>
 
@@ -105,6 +117,7 @@ import StockPricePanel from './components/StockPricePanel.vue'
 import { useAuth } from './composables/useAuth'
 import { useFlowSnapshot } from './composables/useFlowSnapshot'
 import { useAggregation } from './composables/useAggregation'
+import { buildColorMap } from './lib/stockColors'
 
 const auth = useAuth()
 const snap = useFlowSnapshot()
@@ -119,6 +132,10 @@ const { rows, totals, cumulativeSeries, ratioSeries, stockPanels } = useAggregat
   computed(() => snap.snapshot.value),
   computed(() => controls)
 )
+
+// 個股卡片背景的顏色，跟「累積淨流入走勢」圖例共用同一套配色邏輯(見
+// lib/stockColors.js)，這樣同一檔股票在圖例跟卡片上拿到的顏色會一致。
+const stockColorMap = computed(() => buildColorMap(cumulativeSeries.value.series))
 
 const selectedDate = ref('')
 const dateOptions = computed(() => {
