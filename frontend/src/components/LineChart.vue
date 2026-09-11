@@ -72,6 +72,23 @@ function formatClock(offsetSec) {
   return `${hh}:${mm}`
 }
 
+// 這張圖常常同時有一條爆量的族群(例如晶圓代工 -2000多億)跟一群擠在 0 附近
+// 的族群(其他大部分族群通常在 ±500 億內)。如果 Y 軸照原始金額線性畫，
+// 那條爆量的線會把軸拉得很長，其餘那一群線跟標籤全部被壓縮在軸的一小段
+// 裡，不管標籤防重疊做得多好都還是會看起來很擠——因為根本沒有像素空間
+// 可以分。這裡改用「symlog」(對稱對數)座標：數值越大，被壓縮得越多；
+// 越接近 0，越接近原始線性比例。這樣那群小數值的線就能分到多好幾倍的
+// 顯示空間，爆量的那條依然看得到、只是跟其他線的距離不會再誇張到把整
+// 群其他線都擠死。SYMLOG_C 是「多大金額以內大致還算線性」的門檻，數字
+// 越小壓縮越激烈；覺得還是太擠或壓太過頭，調這個常數就好。
+const SYMLOG_C = 5e9 // 50 億
+function symlogForward(v) {
+  return Math.sign(v) * Math.log10(1 + Math.abs(v) / SYMLOG_C)
+}
+function symlogInverse(t) {
+  return Math.sign(t) * (Math.pow(10, Math.abs(t)) - 1) * SYMLOG_C
+}
+
 watch([() => props.cumulative, mode, count], renderChart, { deep: true })
 
 function renderChart() {
@@ -107,10 +124,13 @@ function renderChart() {
     triggerLineEvent: true,
     lineStyle: { width: 2 },
     itemStyle: { color: palette[idx % palette.length] },
-    data: props.cumulative.series[name],
+    // 畫在圖上的是 symlog 壓縮過的座標，不是原始金額——文字標籤、
+    // tooltip、Y 軸刻度顯示的時候都要用 symlogInverse() 換算回真正的
+    // 金額，不然使用者看到的數字會是錯的。
+    data: (props.cumulative.series[name] || []).map(symlogForward),
     endLabel: {
       show: true,
-      formatter: (params) => `${params.seriesName}\n${fmtMoney(params.value)}`,
+      formatter: (params) => `${params.seriesName}\n${fmtMoney(symlogInverse(params.value))}`,
       color: 'inherit',
       fontSize: 11,
       lineHeight: 14,
@@ -136,8 +156,10 @@ function renderChart() {
     backgroundColor: 'transparent',
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (val) =>
-        Math.abs(val) >= 100000000 ? (val / 100000000).toFixed(2) + ' 億' : (val / 10000).toFixed(2) + ' 萬',
+      valueFormatter: (val) => {
+        const real = symlogInverse(val)
+        return Math.abs(real) >= 100000000 ? (real / 100000000).toFixed(2) + ' 億' : (real / 10000).toFixed(2) + ' 萬'
+      },
     },
     grid: { left: '5%', right: '19%', bottom: '10%', top: '5%', containLabel: true },
     xAxis: {
@@ -149,7 +171,17 @@ function renderChart() {
     yAxis: {
       type: 'value',
       splitLine: { lineStyle: { color: '#2a2e39' } },
-      axisLabel: { color: '#888', formatter: (val) => (val / 100000000).toFixed(0) + '億' },
+      // 軸上的刻度位置是 symlog 座標，要換算回真正金額才能顯示；換算完
+      // 之後相鄰刻度之間代表的金額不會是等差的(這是對數座標本來就有的
+      // 特性，越靠近 0 刻度越密、越遠越疏)，是正常現象。
+      axisLabel: {
+        color: '#888',
+        formatter: (val) => {
+          const real = symlogInverse(val)
+          const sign = real > 0 ? '+' : real < 0 ? '-' : ''
+          return sign + (Math.abs(real) / 100000000).toFixed(0) + '億'
+        },
+      },
     },
     series,
   }
