@@ -108,6 +108,102 @@ export function decodeSnapshot(raw) {
   }
 }
 
+/**
+ * 依目前已解碼的 snapshot，算出每檔股票的「游標」：4 個 net 桶各自目前有幾筆
+ * + price 序列目前有幾筆。格式跟 worker 寫 .t.json 時附的 "from" 欄位一致
+ * ([xl_len, l_len, m_len, s_len, price_len])，輪詢 .t.json 時要拿這份跟
+ * "from" 核對，兩邊對得起來才能直接把增量疊加上去，對不起來就要整包重抓
+ * .b.json——不然增量會接錯位置，資料就亂掉了。
+ */
+export function buildCursor(decoded) {
+  const cursor = {}
+  for (const sector in decoded.stocks) {
+    const stockList = decoded.stocks[sector] || []
+    const netList = decoded.net[sector] || []
+    const priceList = decoded.price[sector] || []
+    stockList.forEach((s, i) => {
+      const buckets = netList[i] || [[], [], [], []]
+      const priceArr = priceList[i] || []
+      cursor[s.code] = [buckets[0].length, buckets[1].length, buckets[2].length, buckets[3].length, priceArr.length]
+    })
+  }
+  return cursor
+}
+
+function cursorEqual(a, b) {
+  if (!a || !b) return false
+  for (let k = 0; k < 5; k++) {
+    if ((a[k] || 0) !== (b[k] || 0)) return false
+  }
+  return true
+}
+
+/**
+ * 把 .t.json 的增量原始資料，疊加進 decodeSnapshot() 已經解碼好的結構——用
+ * push() 原地變動陣列，不整包换掉 decoded 物件，Vue 深層響應式才抓得到「哪些
+ * 陣列真的變長了」，只有真的受影響的圖表/計算會重新跑，不是每次輪詢都整個
+ * 重算一次。
+ *
+ * cursor 是呼叫端目前記著的每檔股票游標(buildCursor() 算出來的那份物件，會
+ * 在這裡就地更新)；raw 是 .t.json 解析出來的原始 JSON(還沒解碼)。
+ *
+ * 回傳 true 表示整批套用成功；false 表示套不上去(可能是某個族群的股票數量
+ * 跟本地記的不一樣——盤中新股票開始有成交會讓後面股票的陣列位置整個偏移，
+ * 或是某檔股票的 cursor 跟這批增量附的 "from" 對不起來——可能漏接過某次快照、
+ * 或 worker 中途重啟過)，這種情況完全不會動 decoded，呼叫端要改成整包重抓
+ * .b.json 才安全。
+ */
+export function applyIncremental(decoded, cursor, raw) {
+  const priceScale = raw.price_scale || 100
+  const incrFrom = raw.from || {}
+  const netIn = raw.net || {}
+  const amtIn = raw.amt || {}
+  const priceIn = raw.price || {}
+
+  // 先整批核對過一輪，任何一項對不起來就整批放棄——不要套到一半才發現不
+  // 一致，留下部分套用、部分沒套的髒狀態。
+  for (const sector in netIn) {
+    const stockList = decoded.stocks[sector] || []
+    const netRow = netIn[sector] || []
+    if (netRow.length !== stockList.length) return false
+    for (let i = 0; i < stockList.length; i++) {
+      const expected = incrFrom[stockList[i].code] || [0, 0, 0, 0, 0]
+      if (!cursorEqual(cursor[stockList[i].code], expected)) return false
+    }
+  }
+
+  // 核對通過，才真的把新資料 push 進已解碼的陣列。
+  for (const sector in netIn) {
+    const stockList = decoded.stocks[sector] || []
+    const netRow = netIn[sector] || []
+    const amtRow = amtIn[sector] || []
+    const priceRow = priceIn[sector] || []
+    for (let i = 0; i < stockList.length; i++) {
+      const code = stockList[i].code
+      for (let b = 0; b < 4; b++) {
+        const newNet = decodeBucket((netRow[i] || [])[b])
+        if (newNet.length) decoded.net[sector][i][b].push(...newNet)
+        const newAmt = decodeBucket((amtRow[i] || [])[b])
+        if (newAmt.length) decoded.amt[sector][i][b].push(...newAmt)
+      }
+      const newPrice = decodeBucket(priceRow[i]).map(([t, v]) => [t, v / priceScale])
+      if (newPrice.length) decoded.price[sector][i].push(...newPrice)
+
+      cursor[code] = [
+        decoded.net[sector][i][0].length,
+        decoded.net[sector][i][1].length,
+        decoded.net[sector][i][2].length,
+        decoded.net[sector][i][3].length,
+        decoded.price[sector][i].length,
+      ]
+    }
+  }
+
+  decoded.to = raw.to
+  decoded.asof = raw.asof
+  return true
+}
+
 export const BUCKET_LABELS = ['特大單', '大單', '中單', '小單']
 export const BUCKET_KEYS = ['xl', 'l', 'm', 's']
 
