@@ -22,7 +22,15 @@ const POLL_MS = 8000
  *      快照、或 worker 中途重啟過)
  *   3. 某個族群底下的股票數量跟本地記的不一樣(盤中新股票開始有成交，股票
  *      清單一變，後面股票在陣列裡的位置就整個偏移，不能再用位置對應)
+ *
+ * 另外，已經收盤 finalize 的日期資料永遠不會再變(worker 都結束了)，所以在
+ * 這個 session 裡切換過的「已收盤」日期會存進 dateCache，之後同一個 session
+ * 內再切回同一天，直接用快取、不用重新打 API 下載+解碼一次——只有還在盤中
+ * 更新的「今天」不會走這條快取(因為資料本來就一直在變)。DATE_CACHE_LIMIT
+ * 是簡單的 FIFO 上限，避免一個 session 開一整天、切過幾十天資料後無限長大。
  */
+const DATE_CACHE_LIMIT = 30
+
 export function useFlowSnapshot() {
   const snapshot = ref(null) // decodeSnapshot() 的結果
   const status = ref('idle') // idle | loading | live | final | error | not_found
@@ -32,6 +40,7 @@ export function useFlowSnapshot() {
   let pollTimer = null
   let currentDate = null
   let cursor = {} // {code: [xl_len, l_len, m_len, s_len, price_len]}，只在 live 輪詢時用
+  const dateCache = new Map() // date -> 已解碼的 snapshot，只存「已收盤」的日期
 
   async function fetchJson(url) {
     const res = await fetch(url, { credentials: 'include' })
@@ -91,7 +100,15 @@ export function useFlowSnapshot() {
       const isFinal = availableDates.value.final.includes(date)
 
       if (isFinal) {
-        await pollFull(date, 'full')
+        if (dateCache.has(date)) {
+          snapshot.value = dateCache.get(date)
+        } else {
+          await pollFull(date, 'full')
+          dateCache.set(date, snapshot.value)
+          if (dateCache.size > DATE_CACHE_LIMIT) {
+            dateCache.delete(dateCache.keys().next().value)
+          }
+        }
         status.value = 'final'
         return
       }

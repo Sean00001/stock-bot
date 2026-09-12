@@ -10,7 +10,40 @@ import { sumWindow, INTERVAL_SECONDS, RESOLUTION_SECONDS } from '../lib/flowCode
  * controlsRef: ref({ interval, resolution, sector })  sector=null 代表在看全市場(族群層)，
  *              有值代表已下鑽到某個族群，改看該族群底下的個股
  */
+
+// ---- 記憶化 ----
+// 「返回大盤/下鑽族群/切換日期」在市場層跟族群層之間來回切換時，只要底下的
+// tick 資料沒有真的變(同一份 decoded、同一個 d.to 版本)，重複回到同一個
+// sector/interval/resolution 組合，答案必然完全一樣——沒必要每次都重新掃過
+// 一次全市場/整天的 tick 資料。用一個簡單的 Map 快取：key 含 d.date + d.to
+// (資料版本)，資料一有新 tick 進來(d.to 變了)或換了別的日期，舊 key 自然對
+// 不上、不會被誤用，不需要額外手動清快取。
+//
+// 這樣「返回大盤」幾乎會變成瞬間——因為一開始下鑽進某個族群之前，就已經在
+// 市場層算過一次了，直接命中快取；「切換日期」也會有感改善，因為換日期後
+// 通常也會馬上又切回市場層看總覽，一樣吃得到快取。
+//
+// 快取存在 useAggregation() 這個 closure 裡，跟著 App.vue 整個生命週期活著；
+// 用 Map 的插入順序做簡單的 FIFO 上限，避免長時間掛著、切過很多天的資料後
+// 無限長大。
+const MAX_CACHE_ENTRIES = 300
+
+function memoize(cache, key, compute) {
+  if (cache.has(key)) return cache.get(key)
+  const value = compute()
+  cache.set(key, value)
+  if (cache.size > MAX_CACHE_ENTRIES) {
+    cache.delete(cache.keys().next().value)
+  }
+  return value
+}
+
 export function useAggregation(decodedRef, controlsRef) {
+  const rowsCache = new Map()
+  const cumulativeCache = new Map()
+  const ratioCache = new Map()
+  const stockPanelsCache = new Map()
+
   const nowOffset = computed(() => {
     const d = decodedRef.value
     if (!d) return 0
@@ -54,39 +87,43 @@ export function useAggregation(decodedRef, controlsRef) {
   const rows = computed(() => {
     const d = decodedRef.value
     if (!d) return []
-    const { tFrom, tTo } = windowRange.value
     const sectorFilter = controlsRef.value.sector
+    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.interval}`
 
-    if (sectorFilter) {
-      const stockList = d.stocks[sectorFilter] || []
-      const netList = d.net[sectorFilter] || []
-      const amtList = d.amt[sectorFilter] || []
-      return stockList
-        .map((s, idx) => {
-          const net4 = sum4(netList[idx] || [[], [], [], []], tFrom, tTo)
-          const amt4 = sum4(amtList[idx] || [[], [], [], []], tFrom, tTo)
-          return buildRow(`${s.code} ${s.name}`, net4, amt4)
+    return memoize(rowsCache, key, () => {
+      const { tFrom, tTo } = windowRange.value
+
+      if (sectorFilter) {
+        const stockList = d.stocks[sectorFilter] || []
+        const netList = d.net[sectorFilter] || []
+        const amtList = d.amt[sectorFilter] || []
+        return stockList
+          .map((s, idx) => {
+            const net4 = sum4(netList[idx] || [[], [], [], []], tFrom, tTo)
+            const amt4 = sum4(amtList[idx] || [[], [], [], []], tFrom, tTo)
+            return buildRow(`${s.code} ${s.name}`, net4, amt4)
+          })
+          .filter((r) => r.amount > 0)
+      }
+
+      return d.sectors
+        .map((sector) => {
+          const netList = d.net[sector] || []
+          const amtList = d.amt[sector] || []
+          const net4 = [0, 0, 0, 0]
+          const amt4 = [0, 0, 0, 0]
+          for (let i = 0; i < netList.length; i++) {
+            const n = sum4(netList[i], tFrom, tTo)
+            const a = sum4(amtList[i], tFrom, tTo)
+            for (let b = 0; b < 4; b++) {
+              net4[b] += n[b]
+              amt4[b] += a[b]
+            }
+          }
+          return buildRow(sector, net4, amt4)
         })
         .filter((r) => r.amount > 0)
-    }
-
-    return d.sectors
-      .map((sector) => {
-        const netList = d.net[sector] || []
-        const amtList = d.amt[sector] || []
-        const net4 = [0, 0, 0, 0]
-        const amt4 = [0, 0, 0, 0]
-        for (let i = 0; i < netList.length; i++) {
-          const n = sum4(netList[i], tFrom, tTo)
-          const a = sum4(amtList[i], tFrom, tTo)
-          for (let b = 0; b < 4; b++) {
-            net4[b] += n[b]
-            amt4[b] += a[b]
-          }
-        }
-        return buildRow(sector, net4, amt4)
-      })
-      .filter((r) => r.amount > 0)
+    })
   })
 
   const totals = computed(() => {
@@ -134,27 +171,30 @@ export function useAggregation(decodedRef, controlsRef) {
   const cumulativeSeries = computed(() => {
     const d = decodedRef.value
     if (!d) return { times: [], series: {} }
-
-    const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
-    const steps = Math.max(1, Math.floor(nowOffset.value / stepSec) + 1)
-    const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
     const sectorFilter = controlsRef.value.sector
+    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.resolution}`
 
-    const series = {}
-    if (sectorFilter) {
-      const stockList = d.stocks[sectorFilter] || []
-      const netList = d.net[sectorFilter] || []
-      stockList.forEach((s, idx) => {
-        const pts = flattenPoints([netList[idx] || [[], [], [], []]])
-        series[`${s.code} ${s.name}`] = toCumulativeSteps(pts, stepSec, steps)
-      })
-    } else {
-      d.sectors.forEach((sector) => {
-        const pts = flattenPoints(d.net[sector] || [])
-        series[sector] = toCumulativeSteps(pts, stepSec, steps)
-      })
-    }
-    return { times, series }
+    return memoize(cumulativeCache, key, () => {
+      const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
+      const steps = Math.max(1, Math.floor(nowOffset.value / stepSec) + 1)
+      const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
+
+      const series = {}
+      if (sectorFilter) {
+        const stockList = d.stocks[sectorFilter] || []
+        const netList = d.net[sectorFilter] || []
+        stockList.forEach((s, idx) => {
+          const pts = flattenPoints([netList[idx] || [[], [], [], []]])
+          series[`${s.code} ${s.name}`] = toCumulativeSteps(pts, stepSec, steps)
+        })
+      } else {
+        d.sectors.forEach((sector) => {
+          const pts = flattenPoints(d.net[sector] || [])
+          series[sector] = toCumulativeSteps(pts, stepSec, steps)
+        })
+      }
+      return { times, series }
+    })
   })
 
   // ---- 淨流入占成交值比走勢：跟累積淨流入走勢圖同一份 X 軸(開盤到現在、
@@ -168,39 +208,42 @@ export function useAggregation(decodedRef, controlsRef) {
   const ratioSeries = computed(() => {
     const d = decodedRef.value
     if (!d) return { times: [], series: {} }
-
-    const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
-    const steps = Math.max(1, Math.floor(nowOffset.value / stepSec) + 1)
-    const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
     const sectorFilter = controlsRef.value.sector
+    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.resolution}`
 
-    function ratioOf(netPts, amtPts) {
-      const netCum = toCumulativeSteps(netPts, stepSec, steps)
-      const amtCum = toCumulativeSteps(amtPts, stepSec, steps)
-      return netCum.map((n, idx) => {
-        const a = amtCum[idx]
-        return a >= RATIO_MIN_AMT ? (n / a) * 100 : null
-      })
-    }
+    return memoize(ratioCache, key, () => {
+      const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
+      const steps = Math.max(1, Math.floor(nowOffset.value / stepSec) + 1)
+      const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
 
-    const series = {}
-    if (sectorFilter) {
-      const stockList = d.stocks[sectorFilter] || []
-      const netList = d.net[sectorFilter] || []
-      const amtList = d.amt[sectorFilter] || []
-      stockList.forEach((s, idx) => {
-        const netPts = flattenPoints([netList[idx] || [[], [], [], []]])
-        const amtPts = flattenPoints([amtList[idx] || [[], [], [], []]])
-        series[`${s.code} ${s.name}`] = ratioOf(netPts, amtPts)
-      })
-    } else {
-      d.sectors.forEach((sector) => {
-        const netPts = flattenPoints(d.net[sector] || [])
-        const amtPts = flattenPoints(d.amt[sector] || [])
-        series[sector] = ratioOf(netPts, amtPts)
-      })
-    }
-    return { times, series }
+      function ratioOf(netPts, amtPts) {
+        const netCum = toCumulativeSteps(netPts, stepSec, steps)
+        const amtCum = toCumulativeSteps(amtPts, stepSec, steps)
+        return netCum.map((n, idx) => {
+          const a = amtCum[idx]
+          return a >= RATIO_MIN_AMT ? (n / a) * 100 : null
+        })
+      }
+
+      const series = {}
+      if (sectorFilter) {
+        const stockList = d.stocks[sectorFilter] || []
+        const netList = d.net[sectorFilter] || []
+        const amtList = d.amt[sectorFilter] || []
+        stockList.forEach((s, idx) => {
+          const netPts = flattenPoints([netList[idx] || [[], [], [], []]])
+          const amtPts = flattenPoints([amtList[idx] || [[], [], [], []]])
+          series[`${s.code} ${s.name}`] = ratioOf(netPts, amtPts)
+        })
+      } else {
+        d.sectors.forEach((sector) => {
+          const netPts = flattenPoints(d.net[sector] || [])
+          const amtPts = flattenPoints(d.amt[sector] || [])
+          series[sector] = ratioOf(netPts, amtPts)
+        })
+      }
+      return { times, series }
+    })
   })
 
   // ---- 下鑽到某族群後，右側「個股股價走勢」卡片要用的資料：
@@ -211,37 +254,40 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     const sectorFilter = controlsRef.value.sector
     if (!d || !sectorFilter) return []
+    const key = `${d.date}|${d.to}|${sectorFilter}|${controlsRef.value.interval}`
 
-    const { tFrom, tTo } = windowRange.value
-    const stockList = d.stocks[sectorFilter] || []
-    const netList = d.net[sectorFilter] || []
-    const priceList = d.price[sectorFilter] || []
+    return memoize(stockPanelsCache, key, () => {
+      const { tFrom, tTo } = windowRange.value
+      const stockList = d.stocks[sectorFilter] || []
+      const netList = d.net[sectorFilter] || []
+      const priceList = d.price[sectorFilter] || []
 
-    return stockList
-      .map((s, idx) => {
-        const priceSeries = priceList[idx] || []
-        const prevClose = d.prevClose[s.code] ?? null
-        const lastPrice = priceSeries.length ? priceSeries[priceSeries.length - 1][1] : prevClose
-        const changePct =
-          prevClose != null && prevClose > 0 && lastPrice != null
-            ? ((lastPrice - prevClose) / prevClose) * 100
-            : null
-        const buckets = netList[idx] || [[], [], [], []]
-        const net4 = sum4(buckets, tFrom, tTo)
-        return {
-          code: s.code,
-          name: s.name,
-          priceSeries,
-          lastPrice,
-          prevClose,
-          changePct,
-          netAboveL: net4[0] + net4[1], // 大單以上(特大單+大單)淨流入
-          xlCount: buckets[0].length,
-          lCount: buckets[1].length,
-        }
-      })
-      .filter((s) => s.priceSeries.length > 0)
-      .sort((a, b) => Math.abs(b.netAboveL) - Math.abs(a.netAboveL))
+      return stockList
+        .map((s, idx) => {
+          const priceSeries = priceList[idx] || []
+          const prevClose = d.prevClose[s.code] ?? null
+          const lastPrice = priceSeries.length ? priceSeries[priceSeries.length - 1][1] : prevClose
+          const changePct =
+            prevClose != null && prevClose > 0 && lastPrice != null
+              ? ((lastPrice - prevClose) / prevClose) * 100
+              : null
+          const buckets = netList[idx] || [[], [], [], []]
+          const net4 = sum4(buckets, tFrom, tTo)
+          return {
+            code: s.code,
+            name: s.name,
+            priceSeries,
+            lastPrice,
+            prevClose,
+            changePct,
+            netAboveL: net4[0] + net4[1], // 大單以上(特大單+大單)淨流入
+            xlCount: buckets[0].length,
+            lCount: buckets[1].length,
+          }
+        })
+        .filter((s) => s.priceSeries.length > 0)
+        .sort((a, b) => Math.abs(b.netAboveL) - Math.abs(a.netAboveL))
+    })
   })
 
   return { nowOffset, windowRange, rows, totals, cumulativeSeries, ratioSeries, stockPanels }

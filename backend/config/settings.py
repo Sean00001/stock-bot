@@ -36,6 +36,13 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # 放最前面：回應處理是「後進先出」，排最前面的 process_response 最後才跑，
+    # 等於「所有其他 middleware 都處理完 response body 之後才壓縮」，這樣才
+    # 不會壓縮到一半又被其他 middleware 改內容。快照 API 回傳的是幾 MB~十幾
+    # MB 的 JSON(數字陣列重複性高，壓縮率通常有 5~10 倍)，加這個幾乎是免費
+    # 的頻寬/傳輸時間優化，瀏覽器(Accept-Encoding: gzip)都會自動處理，前端
+    # 完全不用改。
+    "django.middleware.gzip.GZipMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
