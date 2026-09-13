@@ -118,6 +118,11 @@ def backfill(api: sj.Shioaji, date_str: str, contracts: list):
     full["final"] = True
     full["last_price"] = last_price
     full["prev_close"] = load_prev_close(date_str)
+    # 跟 main.py 即時 worker 的 finalize() 一致，順便存開盤價/最高價，
+    # 給排行表的「隔天開/收/最高%」欄位用。
+    open_price, high_price = agg.open_high_prices()
+    full["open_price"] = open_price
+    full["high_price"] = high_price
 
     os.makedirs(FLOWDATA_DIR, exist_ok=True)
     path = os.path.join(FLOWDATA_DIR, f"{date_str}.json")

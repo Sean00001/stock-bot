@@ -168,6 +168,23 @@ class StockAggregator:
 
     # ---- 快照輸出 ----
 
+    def open_high_prices(self) -> tuple[dict[str, float], dict[str, float]]:
+        """回傳 ({代號: 當天開盤價}, {代號: 當天盤中最高價})，只在收盤 finalize
+        時呼叫一次即可(見 main.py 的 finalize())。這兩個數字直接從記憶體裡已經
+        累積好的 price 序列算(第一筆 = 開盤價、最大值 = 最高價)，供「族群/個股
+        淨流入排行」的「隔天開/收/最高%」欄位使用——把這兩個數字提前在收盤時
+        算好、跟 last_price 一起存進整日檔的頂層欄位，之後任何人要用「這天的
+        開盤/最高價」都不用為了這兩個數字重新解碼一次整包 price 序列(那對一
+        整天 1900 檔股票的逐筆價格來說很浪費)。"""
+        open_out: dict[str, float] = {}
+        high_out: dict[str, float] = {}
+        for code, series in self.price.items():
+            if not series.v:
+                continue
+            open_out[code] = series.v[0] / self.PRICE_SCALE
+            high_out[code] = max(series.v) / self.PRICE_SCALE
+        return open_out, high_out
+
     def sectors(self) -> list[str]:
         return sorted(set(self.sector_of.values()))
 

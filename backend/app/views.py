@@ -113,3 +113,36 @@ def flow_snapshot_view(request, date: str, kind: str):
     resp = HttpResponse(data, content_type="application/json")
     resp["Cache-Control"] = "no-store"
     return resp
+
+
+# 「族群/個股淨流入排行」表的「隔天開/收/最高%」欄位，只需要整日檔裡幾個
+# 小的頂層欄位(每檔股票的當天開盤價/最高價/收盤價/前一日收盤價)，不需要
+# tick 級的 net/amt/price 序列——那些一天可以有十幾 MB，只為了三個數字整包
+# 抓下來、還要在前端解碼一次很浪費。這個 API 直接在 backend 這邊把整日檔
+# 讀進來，只挑幾個小欄位回傳，回應通常只有幾十 KB。
+_SUMMARY_KEYS = ("date", "asof", "final", "last_price", "open_price", "high_price", "prev_close")
+
+
+@require_login
+def flow_summary_view(request, date: str):
+    if len(date) != 10 or date[4] != "-" or date[7] != "-":
+        return JsonResponse({"status": "error", "error": "date 格式錯誤"}, status=400)
+
+    path = os.path.join(settings.FLOWDATA_DIR, f"{date}.json")
+    path = os.path.normpath(path)
+    if not path.startswith(os.path.normpath(settings.FLOWDATA_DIR)):
+        return JsonResponse({"status": "error", "error": "非法路徑"}, status=400)
+
+    # 這個 API 只對「已經收盤 finalize」的日期有意義({date}.json 才會有
+    # open_price/high_price)，還在盤中的日期沒有這個檔案，直接回 404，
+    # 前端看到 404 就知道這天還沒有「隔天」可以查。
+    if not os.path.exists(path):
+        return HttpResponseNotFound(json.dumps({"status": "error", "error": "not found"}), content_type="application/json")
+
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    summary = {k: data.get(k) for k in _SUMMARY_KEYS}
+    resp = JsonResponse(summary)
+    resp["Cache-Control"] = "no-store"
+    return resp

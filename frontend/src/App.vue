@@ -79,6 +79,17 @@
         </div>
       </div>
 
+      <div class="ranking-row">
+        <RankingTable
+          :sector-rows="sectorRanking"
+          :stock-rows="stockRanking"
+          :date="selectedDate"
+          :final-dates="snap.availableDates.value.final"
+          :last-price-map="snap.snapshot.value?.lastPrice || {}"
+          @drill-down="handleRankingDrill"
+        />
+      </div>
+
       <div class="ratio-row">
         <div class="ratio-panel glass-panel">
           <h3 class="panel-title">淨流入占成交值比走勢 (可點擊線條下鑽)</h3>
@@ -110,6 +121,7 @@ import SankeyChart from './components/SankeyChart.vue'
 import LineChart from './components/LineChart.vue'
 import RatioChart from './components/RatioChart.vue'
 import StockPricePanel from './components/StockPricePanel.vue'
+import RankingTable from './components/RankingTable.vue'
 import { useAuth } from './composables/useAuth'
 import { useFlowSnapshot } from './composables/useFlowSnapshot'
 import { useAggregation } from './composables/useAggregation'
@@ -123,7 +135,7 @@ const controls = reactive({
   sector: null, // 下鑽後的族群名稱，null = 全市場(族群層)
 })
 
-const { rows, totals, cumulativeSeries, ratioSeries, stockPanels } = useAggregation(
+const { rows, totals, cumulativeSeries, ratioSeries, stockPanels, sectorRanking, stockRanking } = useAggregation(
   computed(() => snap.snapshot.value),
   computed(() => controls)
 )
@@ -263,6 +275,18 @@ function handleDrillDown(name) {
       controls.sector = name
     })
   }
+}
+
+// 排行表(RankingTable)的列點擊：跟上面主圖表的 handleDrillDown 不一樣的地方
+// 是排行表本身不受目前下鑽狀態影響(永遠顯示全市場排行)，所以不管現在有沒有
+// 已經下鑽在某個族群，點排行表的列都要能直接切過去(包含「已下鑽族群 A，又
+// 點排行表裡族群 B」這種跨族群切換)；只有點到「目前就已經在看的那個族群」
+// 時才不用重算。個股列的 row.sector 是該股票所屬族群，一樣可以直接下鑽進去。
+function handleRankingDrill(sectorName) {
+  if (!sectorName || sectorName === controls.sector) return
+  runHeavyChange(`載入 ${sectorName} 族群資料中...`, () => {
+    controls.sector = sectorName
+  })
 }
 
 function formatMoney(val) {
@@ -498,6 +522,10 @@ body {
   font-size: 1.1rem;
   font-weight: 500;
   color: #cbd5e1;
+}
+
+.ranking-row {
+  margin-top: 20px;
 }
 
 .ratio-row {

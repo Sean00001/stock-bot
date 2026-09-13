@@ -297,6 +297,12 @@ class Worker:
             full = self.agg.build_full_snapshot(self.date_str, asof, prev_close=self.prev_close)
             full["final"] = True
             full["last_price"] = dict(self.last_price)
+            # 順便把當天每檔股票的開盤價/最高價存進整日檔，給「族群/個股淨流入
+            # 排行」表的「隔天開/收/最高%」欄位用；隔天要看「這天」的開盤/最高
+            # 價時，直接讀這兩個頂層欄位就好，不用整包解碼 price 序列。
+            open_price, high_price = self.agg.open_high_prices()
+            full["open_price"] = open_price
+            full["high_price"] = high_price
         atomic_write_json(os.path.join(FLOWDATA_DIR, f"{self.date_str}.json"), full)
         self.finalized = True
         print("[worker] 整日檔已寫入，worker 即將結束")

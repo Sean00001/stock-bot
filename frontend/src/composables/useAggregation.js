@@ -43,6 +43,8 @@ export function useAggregation(decodedRef, controlsRef) {
   const cumulativeCache = new Map()
   const ratioCache = new Map()
   const stockPanelsCache = new Map()
+  const sectorRankingCache = new Map()
+  const stockRankingCache = new Map()
 
   const nowOffset = computed(() => {
     const d = decodedRef.value
@@ -290,5 +292,84 @@ export function useAggregation(decodedRef, controlsRef) {
     })
   })
 
-  return { nowOffset, windowRange, rows, totals, cumulativeSeries, ratioSeries, stockPanels }
+  // ---- 族群/個股淨流入排行表用的資料 ----
+  // 跟上面的 rows 不一樣的地方：rows 會依「目前有沒有下鑽到某個族群」切換
+  // 顯示族群層或該族群底下的個股層；下面這兩個排行永遠是「全市場」口徑
+  // (不受 controls.sector 影響)，因為排行表是獨立於下鑽狀態、隨時都能看
+  // 全市場總覽的區塊——即使目前正下鑽在某個族群裡，排行表也還是看得到
+  // 全部 44 個族群/171 檔股票的排名，用排行表自己的列點擊來下鑽，跟上面
+  // 主圖表的下鑽狀態互不影響對方的計算基礎。
+
+  // 全市場「族群」排行：跟 rows 的「else 分支」邏輯一樣，只是不受 sectorFilter
+  // 影響、永遠算全部族群。
+  const sectorRanking = computed(() => {
+    const d = decodedRef.value
+    if (!d) return []
+    const key = `${d.date}|${d.to}|${controlsRef.value.interval}`
+
+    return memoize(sectorRankingCache, key, () => {
+      const { tFrom, tTo } = windowRange.value
+      return d.sectors
+        .map((sector) => {
+          const netList = d.net[sector] || []
+          const amtList = d.amt[sector] || []
+          const net4 = [0, 0, 0, 0]
+          const amt4 = [0, 0, 0, 0]
+          for (let i = 0; i < netList.length; i++) {
+            const n = sum4(netList[i], tFrom, tTo)
+            const a = sum4(amtList[i], tFrom, tTo)
+            for (let b = 0; b < 4; b++) {
+              net4[b] += n[b]
+              amt4[b] += a[b]
+            }
+          }
+          const row = buildRow(sector, net4, amt4)
+          row.sector = sector
+          row.netPct = row.amount > 0 ? (row.net / row.amount) * 100 : 0
+          return row
+        })
+        .filter((r) => r.amount > 0)
+    })
+  })
+
+  // 全市場「個股」排行：把每個族群底下的股票攤平成同一個陣列，不分族群
+  // 混在一起排名(跟 rows 下鑽某族群時「只看那個族群底下個股」不一樣)。
+  const stockRanking = computed(() => {
+    const d = decodedRef.value
+    if (!d) return []
+    const key = `${d.date}|${d.to}|${controlsRef.value.interval}`
+
+    return memoize(stockRankingCache, key, () => {
+      const { tFrom, tTo } = windowRange.value
+      const out = []
+      for (const sector of d.sectors) {
+        const stockList = d.stocks[sector] || []
+        const netList = d.net[sector] || []
+        const amtList = d.amt[sector] || []
+        stockList.forEach((s, idx) => {
+          const net4 = sum4(netList[idx] || [[], [], [], []], tFrom, tTo)
+          const amt4 = sum4(amtList[idx] || [[], [], [], []], tFrom, tTo)
+          const row = buildRow(`${s.code} ${s.name}`, net4, amt4)
+          row.code = s.code
+          row.stockName = s.name
+          row.sector = sector
+          row.netPct = row.amount > 0 ? (row.net / row.amount) * 100 : 0
+          out.push(row)
+        })
+      }
+      return out.filter((r) => r.amount > 0)
+    })
+  })
+
+  return {
+    nowOffset,
+    windowRange,
+    rows,
+    totals,
+    cumulativeSeries,
+    ratioSeries,
+    stockPanels,
+    sectorRanking,
+    stockRanking,
+  }
 }
