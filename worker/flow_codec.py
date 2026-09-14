@@ -242,10 +242,13 @@ class StockAggregator:
         從 0 開始(盤中因為改程式/當機重啟 worker，記憶體裡的資料會不見，
         但快照檔已經幫忙保留了重啟前的所有 tick，讀回來接著算就好)。
 
-        sector_override 可傳目前最新的族群分類(例如 watchlist.txt 剛改過)，
-        代號有對到新分類就優先用新的，沒對到才沿用快照裡記錄的舊分類 ——
-        這樣中途改了族群分組再重啟，接續回來的舊資料也會盡量套用新分類，
-        不會停留在改版前的舊族群名稱。
+        sector_override 傳目前最新的 watchlist.txt 族群分類。2026-09-14 起，
+        worker 只會訂閱/記錄 watchlist.txt 裡的股票，所以 sector_override 非空
+        時，快照裡任何「代號沒對到 sector_override」的股票——也就是舊版(還會
+        fallback 用官方產業分類)接續下來的、現在已經不在 watchlist 範圍內的
+        股票——直接捨棄不接續，不會沿用快照裡記錄的舊族群名稱；只有沒傳
+        sector_override(或傳空 dict，例如 watchlist.txt 讀取失敗)時，才維持
+        舊行為、原樣沿用快照裡的舊族群名稱，當作保底。
 
         回傳 {代號: 最後成交價}，供呼叫端拿去補 Worker.last_price（收盤
         finalize 時要用，沒有的話重啟前有成交、重啟後沒再成交的股票就會漏掉）。"""
@@ -255,6 +258,7 @@ class StockAggregator:
         price_in = snapshot.get("price") or {}
         price_scale = snapshot.get("price_scale") or self.PRICE_SCALE
         sector_override = sector_override or {}
+        restrict_to_override = bool(sector_override)
 
         restored_last_price: dict[str, float] = {}
 
@@ -264,7 +268,12 @@ class StockAggregator:
             price_row = price_in.get(old_sector) or []
             for idx, s in enumerate(stock_list):
                 code, name = s["code"], s["name"]
-                sector = sector_override.get(code) or old_sector
+                if restrict_to_override:
+                    sector = sector_override.get(code)
+                    if sector is None:
+                        continue  # 不在目前 watchlist.txt 範圍內，捨棄、不接續
+                else:
+                    sector = old_sector
                 self._ensure(code, name, sector)
 
                 if idx < len(net_row):

@@ -10,11 +10,12 @@
    清單拆成好幾批、每條連線各訂閱一批，所有連線的 tick 都回呼進同一個共用的
    StockAggregator(用 self.lock 保護)，最後合併寫成同一份快照檔——不是每個
    worker 行程各吃一份、事後再合併，是同一個行程內部就先合併好。
-   訂閱的股票清單：watchlist.txt 裡列出的(有自編族群名稱、比較好認)一定會
-   優先訂閱到；剩下的連線容量會依代號順序盡量塞進全市場其餘的股票，這些
-   「沒被 watchlist.txt 分類到」的股票會 fallback 用證交所官方產業分類
-   (industry_name)當族群名稱。開的連線數不夠涵蓋全市場時，只會訂閱到前面
-   這些，其餘的股票這天就沒有資料(不會報錯，就是量體看起來比全市場少)。
+   訂閱的股票清單：2026-09-14 改成只訂閱 worker/watchlist.txt 裡列出的股票
+   (使用者自訂的族群、171 檔)，不再拿全市場其餘股票塞滿連線容量——不在這份
+   清單裡的股票，即使有成交也完全不記錄、不會出現在畫面上，不會 fallback
+   用證交所官方產業分類(industry_name)當族群名稱顯示。這樣「族群」欄位
+   保證只會是使用者自己編的那幾個名稱，不會混進「電子零組件業」「其他電子業」
+   這類官方大分類。
 
 流程：
   1. 依 worker_common.load_accounts()/CONNECTIONS_PER_ACCOUNT 開好所有連線並
@@ -22,10 +23,10 @@
   2. 每一筆 tick(不管從哪條連線來的)依成交金額分進 特大單/大單/中單/小單
      四個桶，用 flow_codec 的 StockAggregator 累積在記憶體裡（不再經過 Redis
      pubsub），同時也記一筆「原始成交價」序列(不分桶)，供下鑽到某族群後的
-     個股股價走勢小圖用。每一筆 tick 所屬的「族群」優先用 watchlist.txt 裡
-     自己編的「# --- 族群名稱 ---」區段標題(見 worker_common.load_watchlist_sectors)，
-     顆粒度比較細；watchlist.txt 沒把該代號放進任何區段時，才 fallback 回
-     Shioaji contract.category 對應的證交所官方大分類(industry_name)。
+     個股股價走勢小圖用。每一筆 tick 所屬的「族群」用 watchlist.txt 裡自己編
+     的「# --- 族群名稱 ---」區段標題(見 worker_common.load_watchlist_sectors)；
+     因為只會訂閱到 watchlist.txt 裡的股票，一定找得到對應的自訂族群，不會
+     再 fallback 用 Shioaji contract.category 對應的官方大分類(industry_name)。
   3. 背景執行緒每隔 SNAPSHOT_SEC 秒，把目前累積的資料寫成兩個檔案到共用的
      FLOWDATA_DIR 目錄：
        {date}.t.json  -- 只含「上次快照之後」新增的 tick（增量，檔案小）
@@ -64,7 +65,6 @@ from worker_common import (  # noqa: E402
     load_watchlist,
     load_watchlist_sectors,
     load_accounts,
-    industry_name,
 )
 
 SNAPSHOT_SEC = float(os.getenv("SNAPSHOT_SEC", "3"))
@@ -106,8 +106,9 @@ class Worker:
         self.date_str = today_str(now_taipei())
         self.agg = StockAggregator(market_open_dt(now_taipei()).timestamp())
         self.prev_close: dict[str, float] = load_prev_close(self.date_str)
-        # watchlist.txt 裡自編的「族群名稱」對照表(代號 -> 較細的主題族群)，
-        # 沒對到的代號在 on_tick_v1 裡會 fallback 回官方 industry_name()。
+        # watchlist.txt 裡自編的「族群名稱」對照表(代號 -> 自訂族群)。因為
+        # setup_subscriptions() 只會訂閱這份清單裡的股票，on_tick_v1 一定
+        # 找得到對應的族群，不會再 fallback 用官方產業分類。
         self.sector_of_code: dict[str, str] = load_watchlist_sectors()
         self.last_price: dict[str, float] = {}
         self.code_to_contract = {}
@@ -183,9 +184,9 @@ class Worker:
                 if len(code) == 4:
                     all_contracts[code] = contract
 
-        # 排序規則：watchlist.txt 裡的股票(有自編族群名稱)一定優先排進去，
-        # 保證訂閱得到；剩下的連線容量依代號順序把全市場其餘股票盡量塞進去
-        # (這些補進來的股票會 fallback 用官方 industry_name 當族群名稱)。
+        # 2026-09-14 起：只訂閱 watchlist.txt 裡列出的股票，不再拿全市場其餘
+        # 股票塞滿連線容量——不在這份清單裡的股票完全不訂閱、不會有 tick 進來，
+        # 也就不會出現在畫面上，不會 fallback 用官方 industry_name 當族群名稱。
         watchlist = load_watchlist() or []
         ordered_codes = []
         seen = set()
@@ -199,20 +200,15 @@ class Worker:
                 missing.append(code)
         if missing:
             print(f"[worker] watchlist 裡有 {len(missing)} 檔在契約清單裡找不到(代號打錯或下市?): {missing}")
-        for code in sorted(all_contracts.keys()):
-            if code not in seen:
-                ordered_codes.append(code)
-                seen.add(code)
 
         capacity = len(self.connections) * MAX_SUBSCRIBE
-        total_market = len(ordered_codes)
-        if total_market > capacity:
-            print(f"[worker] 全市場有 {total_market} 檔，目前 {len(self.connections)} 條連線"
-                  f"總容量只有 {capacity} 檔(每條 {MAX_SUBSCRIBE} 檔)，只會訂閱前 {capacity} 檔"
-                  f"(watchlist.txt 裡的股票保證優先訂閱到)。")
+        total_watchlist = len(ordered_codes)
+        if total_watchlist > capacity:
+            print(f"[worker] watchlist 有 {total_watchlist} 檔，目前 {len(self.connections)} 條連線"
+                  f"總容量只有 {capacity} 檔(每條 {MAX_SUBSCRIBE} 檔)，只會訂閱前 {capacity} 檔。")
             ordered_codes = ordered_codes[:capacity]
         else:
-            print(f"[worker] 全市場共 {total_market} 檔，目前連線總容量 {capacity} 檔，全部都訂閱得到。")
+            print(f"[worker] watchlist 共 {total_watchlist} 檔，目前連線總容量 {capacity} 檔，全部都訂閱得到。")
 
         for i, conn in enumerate(self.connections):
             batch_codes = ordered_codes[i * MAX_SUBSCRIBE:(i + 1) * MAX_SUBSCRIBE]
@@ -222,7 +218,7 @@ class Worker:
             conn.subscribe_batch(batch_contracts)
             print(f"[worker] 連線 {conn.conn_label} 訂閱了 {len(batch_contracts)} 檔")
 
-        print(f"[worker] 全部連線加起來共訂閱 {len(self.code_to_contract)} 檔股票")
+        print(f"[worker] 全部連線加起來共訂閱 {len(self.code_to_contract)} 檔股票(僅 watchlist.txt 範圍)")
 
     def on_tick_v1(self, tick: sj.TickSTKv1):
         code = tick.code
@@ -235,9 +231,12 @@ class Worker:
             return
 
         name = getattr(contract, "name", code)
-        # 族群名稱優先用 watchlist.txt 自編的主題族群(較細)，
-        # 沒對到才 fallback 回 Shioaji category 對應的官方大分類(較粗)。
-        sector = self.sector_of_code.get(code) or industry_name(getattr(contract, "category", None))
+        # 只會收到 watchlist.txt 裡股票的 tick(setup_subscriptions 已經限制訂閱
+        # 範圍只有這份清單)，理論上一定找得到自訂族群；找不到(理論上不該發生)
+        # 就直接丟棄這筆 tick，不再 fallback 用官方產業分類顯示。
+        sector = self.sector_of_code.get(code)
+        if sector is None:
+            return
         price = float(tick.close)
         volume = int(tick.volume)
 
