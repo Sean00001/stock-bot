@@ -86,6 +86,7 @@
         <RankingTable
           :sector-rows="sectorRanking"
           :stock-rows="stockRanking"
+          :active-sector="controls.sector"
           :date="selectedDate"
           :final-dates="snap.availableDates.value.final"
           :last-price-map="snap.snapshot.value?.lastPrice || {}"

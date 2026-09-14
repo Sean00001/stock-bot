@@ -4,8 +4,9 @@
       <div class="title-block">
         <h3 class="panel-title">{{ viewMode === 'sector' ? '族群' : '個股' }}淨流入排行（億元）</h3>
         <p class="sub-note">
-          {{ viewMode === 'sector' ? `全部 ${sectorRows.length} 個族群` : `共 ${stockRows.length} 檔股票` }}・
-          點任一列可鑽看{{ viewMode === 'sector' ? '成分股' : '所屬族群' }}・點欄標題可換排序・
+          <template v-if="activeSector">已下鑽：{{ activeSector }} 共 {{ visibleStockRows.length }} 檔股票</template>
+          <template v-else>{{ viewMode === 'sector' ? `全部 ${sectorRows.length} 個族群` : `共 ${visibleStockRows.length} 檔股票` }}</template>
+          ・點任一列可鑽看{{ viewMode === 'sector' ? '成分股' : '所屬族群' }}・點欄標題可換排序・
           淨流入% 固定全單口徑(不隨級距選擇改變)
           <template v-if="hasNextDay">・回看歷史日多出「隔天開/收/最高%」三欄</template>
         </p>
@@ -14,7 +15,7 @@
       <div class="controls">
         <div class="btn-group">
           <button
-            v-for="opt in viewOptions"
+            v-for="opt in visibleViewOptions"
             :key="opt.key"
             class="toggle-btn"
             :class="{ active: opt.view === viewMode && opt.value === valueMode }"
@@ -91,7 +92,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useNextDaySummary } from '../composables/useNextDaySummary'
 
 const props = defineProps({
@@ -102,6 +103,12 @@ const props = defineProps({
   // 目前查看的這一天、每檔股票的收盤價(decoded.lastPrice)——已收盤日期才有值，
   // 拿來當「隔天%」的計算基準(隔天開/收/最高 相對「這天收盤」的漲跌幅)。
   lastPriceMap: { type: Object, default: () => ({}) },
+  // 目前主圖表(LineChart/SankeyChart/這張表自己的列點擊)下鑽到的族群名稱
+  // (App.vue 的 controls.sector)，null = 還在大盤層。下鑽後這張表要自動只
+  // 顯示該族群底下的個股排行，不用使用者自己再手動切換視圖——這是使用者
+  // 明確要的行為：「點到一個族群裡面了，族群淨流入排行就要顯示那族群裡面
+  // 的股票，不是還顯示族群」。
+  activeSector: { type: String, default: null },
 })
 
 const emit = defineEmits(['drill-down'])
@@ -118,6 +125,29 @@ const viewOptions = [
   { key: 'stock-abs', view: 'stock', value: 'abs', label: '個股・億' },
   { key: 'stock-pct', view: 'stock', value: 'pct', label: '個股・%' },
 ]
+
+// 下鑽進某個族群時，這張表只看「該族群的個股」，「族群・億/族群・%」這兩個
+// 切換鈕先隱藏起來(硬切成個股視圖)，避免使用者切回族群總覽又搞不清楚現在
+// 是全市場排行還是被下鑽狀態影響的排行；回到大盤(activeSector=null)才恢復
+// 完整的四個切換鈕。
+const visibleViewOptions = computed(() =>
+  props.activeSector ? viewOptions.filter((o) => o.view === 'stock') : viewOptions
+)
+
+// activeSector 一改變(下鑽進某族群、或回到大盤)，這張表的視圖跟著自動切換：
+// 下鑽進去 -> 強制切成「個股」視圖(照目前的億/%模式)；回到大盤 -> 還原成
+// 預設的「族群・億」總覽，不要停留在剛才下鑽族群時的個股視圖。
+watch(
+  () => props.activeSector,
+  (sector) => {
+    if (sector) {
+      selectView('stock', valueMode.value === 'pct' ? 'pct' : 'abs')
+    } else {
+      selectView('sector', 'abs')
+    }
+  },
+  { immediate: true }
+)
 
 const filterOptions = [
   { key: 'all', value: 0, label: '全部' },
@@ -166,12 +196,22 @@ function nextDayPctFor(code) {
   return { nextOpenPct: pct(openP), nextClosePct: pct(closeP), nextHighPct: pct(highP) }
 }
 
+// 全市場所有個股(不受下鑽狀態篩選)，給下面 enrichedSectorRows 算族群加權
+// 平均用——族群的「隔天%」要用該族群底下「全部」成分股去加權，不能只用
+// 目前畫面上顯示的那幾檔。
 const enrichedStockRows = computed(() => {
   return props.stockRows.map((r) => ({
     ...r,
     label: `${r.code} ${r.stockName}`,
     ...nextDayPctFor(r.code),
   }))
+})
+
+// 畫面上「個股」表格真正要顯示的列：下鑽進某個族群時，只留該族群底下的
+// 個股；還在大盤層(activeSector 是 null)就是全市場所有個股，跟以前一樣。
+const visibleStockRows = computed(() => {
+  if (!props.activeSector) return enrichedStockRows.value
+  return enrichedStockRows.value.filter((r) => r.sector === props.activeSector)
 })
 
 // 族群列的「隔天%」：依「這天」該族群底下每檔股票的成交值加權平均個股的
@@ -207,7 +247,7 @@ const enrichedSectorRows = computed(() => {
   })
 })
 
-const activeRows = computed(() => (viewMode.value === 'sector' ? enrichedSectorRows.value : enrichedStockRows.value))
+const activeRows = computed(() => (viewMode.value === 'sector' ? enrichedSectorRows.value : visibleStockRows.value))
 
 const filteredRows = computed(() => activeRows.value.filter((r) => r.amount >= amountFilter.value))
 
