@@ -45,6 +45,7 @@ export function useAggregation(decodedRef, controlsRef) {
   const stockPanelsCache = new Map()
   const sectorRankingCache = new Map()
   const stockRankingCache = new Map()
+  const offMarketCache = new Map()
 
   const nowOffset = computed(() => {
     const d = decodedRef.value
@@ -361,6 +362,57 @@ export function useAggregation(decodedRef, controlsRef) {
     })
   })
 
+  // ---- 場外資金進出：跟 SankeyChart 裡「場外新資金/離場轉現金」節點同一套
+  //      口徑(見 SankeyChart.vue 的 tierNetTotal)。某個「單量級距」(特大單/
+  //      大單/中單/小單)在某個時間點，全市場(不分族群、不受下鑽狀態影響，
+  //      永遠全市場口徑)的淨買賣是正是負：正的部分視為「場外新資金」流進
+  //      這個級距；負的部分視為「離場/轉現金」——這個級距淨賣超，賣出去的
+  //      錢沒有留在其他被追蹤的族群裡，等於離開這批觀察範圍、可能轉成現金。
+  //      四個級距的正負部分各自加總成兩條時間序列(彼此獨立，不會互相抵銷，
+  //      才看得出「某個級距淨買、另一個級距淨賣」這種各級距方向不一致的
+  //      情況)，兩條相減就是全市場淨額，理論上會等於同一時間點的「淨流入
+  //      總計」，這裡分開算兩條只是為了畫成走勢圖用。
+  const offMarketFlowSeries = computed(() => {
+    const d = decodedRef.value
+    if (!d) return { times: [], newMoney: [], cashOut: [], net: [] }
+    const key = `${d.date}|${d.to}|${controlsRef.value.resolution}`
+
+    return memoize(offMarketCache, key, () => {
+      const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
+      const steps = Math.max(1, Math.floor(nowOffset.value / stepSec) + 1)
+      const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
+
+      const tierCum = [0, 1, 2, 3].map((b) => {
+        const pts = []
+        for (const sector of d.sectors) {
+          for (const stockBuckets of d.net[sector] || []) {
+            const bucketPts = stockBuckets[b]
+            if (bucketPts) for (const p of bucketPts) pts.push(p)
+          }
+        }
+        pts.sort((a, c) => a[0] - c[0])
+        return toCumulativeSteps(pts, stepSec, steps)
+      })
+
+      const newMoney = new Array(steps)
+      const cashOut = new Array(steps)
+      const net = new Array(steps)
+      for (let k = 0; k < steps; k++) {
+        let pos = 0
+        let neg = 0
+        for (let b = 0; b < 4; b++) {
+          const v = tierCum[b][k]
+          if (v > 0) pos += v
+          else neg += -v
+        }
+        newMoney[k] = pos
+        cashOut[k] = neg
+        net[k] = pos - neg
+      }
+      return { times, newMoney, cashOut, net }
+    })
+  })
+
   return {
     nowOffset,
     windowRange,
@@ -371,5 +423,6 @@ export function useAggregation(decodedRef, controlsRef) {
     stockPanels,
     sectorRanking,
     stockRanking,
+    offMarketFlowSeries,
   }
 }

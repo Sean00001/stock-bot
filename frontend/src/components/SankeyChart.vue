@@ -62,15 +62,23 @@ const bucketOptions = [
 const BUCKET_KEYS = ['net_xl', 'net_l', 'net_m', 'net_s']
 const BUCKET_LABELS = ['特大單', '大單', '中單', '小單']
 const BUCKET_COLORS = ['#8b5cf6', '#3b82f6', '#f59e0b', '#10b981']
+// 「場外新資金/離場轉現金」是額外補上的虛擬節點(見 buildGraph 裡的說明)，
+// 不是可以下鑽的族群/個股，點擊時要跟 BUCKET_LABELS、"其餘..." 一樣被排除。
+const NEW_MONEY_NAME = '場外新資金'
+const CASH_OUT_NAME = '離場/轉現金'
+const NON_DRILLABLE = new Set([...BUCKET_LABELS, NEW_MONEY_NAME, CASH_OUT_NAME])
+function isDrillable(name) {
+  return !NON_DRILLABLE.has(name) && !String(name).startsWith('其餘')
+}
 
 onMounted(() => {
   chartInstance.value = echarts.init(chartRef.value, 'dark')
   chartInstance.value.on('click', (params) => {
-    if (params.dataType === 'node' && !BUCKET_LABELS.includes(params.name) && !params.name.startsWith('其餘')) {
+    if (params.dataType === 'node' && isDrillable(params.name)) {
       emit('node-click', params.name)
     } else if (params.dataType === 'edge') {
       const target = params.data.target
-      if (!BUCKET_LABELS.includes(target) && !String(target).startsWith('其餘')) {
+      if (isDrillable(target)) {
         emit('node-click', target)
       }
     }
@@ -84,6 +92,14 @@ const buckets = computed(() => {
   if (bucketFilter.value === 'all') return [0, 1, 2, 3]
   return [bucketOptions.findIndex((o) => o.value === bucketFilter.value) - 1]
 })
+
+// 這個級距(桶)在「全部」flowData 上真正的全市場淨額(正=買超、負=賣超)，
+// 不受 showLimit(前8/前12/全部) 篩選影響——跟畫面上方統計方塊(特大單/大單/
+// 中單/小單那幾個數字)同一個口徑，用來決定要不要補「場外新資金/離場轉現金」
+// 節點、補多少。
+function tierNetTotal(b) {
+  return props.flowData.reduce((s, row) => s + row[BUCKET_KEYS[b]], 0)
+}
 
 function buildGraph() {
   const activeBuckets = buckets.value
@@ -160,6 +176,32 @@ function buildGraph() {
       if (mag > 0) links.push({ source: BUCKET_LABELS[b], target: restName, value: mag })
     })
   }
+
+  // ---- 場外新資金 / 離場轉現金 ----
+  // 「某個級距的資金被抽走的總額」跟「流進的總額」不保證剛好相等(比方
+  // 特大單這個級距整體淨賣超，賣出去的錢不一定會留在其他被追蹤的族群裡)；
+  // 這裡把每個級距真正的全市場淨額(tierNetTotal，不受 showLimit 篩選影響)
+  // 補一條額外的線，讓 Sankey 圖左右兩側在每個級距節點上都能收支平衡：
+  // 淨額>0(買超) 從左側「場外新資金」補流量進來；淨額<0(賣超) 從右側流去
+  // 「離場/轉現金」，代表這些錢離開了目前看得到的這批族群/個股。
+  let needNewMoneyNode = false
+  let needCashOutNode = false
+  const offMarketLinks = []
+  activeBuckets.forEach((b) => {
+    const tierNet = tierNetTotal(b)
+    if (tierNet <= 0 && tierNet >= 0) return // 剛好 0，不用補
+    const bucketName = BUCKET_LABELS[b]
+    if (tierNet > 0) {
+      needNewMoneyNode = true
+      offMarketLinks.push({ source: NEW_MONEY_NAME, target: bucketName, value: tierNet })
+    } else {
+      needCashOutNode = true
+      offMarketLinks.push({ source: bucketName, target: CASH_OUT_NAME, value: -tierNet })
+    }
+  })
+  if (needNewMoneyNode) nodes.push({ name: NEW_MONEY_NAME, rank: 0, itemStyle: { color: '#f97316' } })
+  if (needCashOutNode) nodes.push({ name: CASH_OUT_NAME, rank: 2, itemStyle: { color: '#64748b' } })
+  links.push(...offMarketLinks)
 
   if (sortMode.value === 'link') {
     // 簡化版「依連線」：把每個 entity 依它連到哪個桶(以主要金額判斷)分組排在一起，

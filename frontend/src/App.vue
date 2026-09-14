@@ -75,7 +75,10 @@
 
         <div class="right-panel glass-panel">
           <h3 class="panel-title">資金流向圖 (可點擊區塊與線條下鑽)</h3>
-          <SankeyChart :flow-data="rows" @node-click="handleDrillDown" />
+          <div class="sankey-flex">
+            <SankeyChart :flow-data="rows" @node-click="handleDrillDown" />
+          </div>
+          <OffMarketFlowChart :series="offMarketFlowSeries" :market-open-ts="snap.snapshot.value?.marketOpenTs || 0" />
         </div>
       </div>
 
@@ -118,6 +121,7 @@ import { reactive, ref, computed, onMounted, watch, nextTick } from 'vue'
 import Login from './components/Login.vue'
 import ControlsBar from './components/ControlsBar.vue'
 import SankeyChart from './components/SankeyChart.vue'
+import OffMarketFlowChart from './components/OffMarketFlowChart.vue'
 import LineChart from './components/LineChart.vue'
 import RatioChart from './components/RatioChart.vue'
 import StockPricePanel from './components/StockPricePanel.vue'
@@ -135,7 +139,16 @@ const controls = reactive({
   sector: null, // 下鑽後的族群名稱，null = 全市場(族群層)
 })
 
-const { rows, totals, cumulativeSeries, ratioSeries, stockPanels, sectorRanking, stockRanking } = useAggregation(
+const {
+  rows,
+  totals,
+  cumulativeSeries,
+  ratioSeries,
+  stockPanels,
+  sectorRanking,
+  stockRanking,
+  offMarketFlowSeries,
+} = useAggregation(
   computed(() => snap.snapshot.value),
   computed(() => controls)
 )
@@ -493,11 +506,14 @@ body {
 
 .main-content {
   /* 不管有沒有下鑽，這一排永遠是固定的 2fr : 1fr，不會因為左右多了個股
-     卡片欄就被壓縮——個股卡片是外掛在 .dashboard 外面，跟這裡無關。 */
+     卡片欄就被壓縮——個股卡片是外掛在 .dashboard 外面，跟這裡無關。
+     右側面板多加了「場外資金進出」小圖之後高度比較擠，整排高度從 600px
+     加到 760px，讓 Sankey 圖跟新的小圖都有足夠空間，左側 LineChart 也
+     跟著變高一點，不算浪費。 */
   display: grid;
   grid-template-columns: 2fr 1fr;
   gap: 20px;
-  height: 600px;
+  height: 760px;
 }
 
 .left-panel,
@@ -506,6 +522,16 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+/* SankeyChart 元件本身用 height:100% 撐滿容器，這裡包一層 flex:1 的 wrapper，
+   讓它只吃「扣掉下面場外資金進出小圖」之後剩下的空間，而不是硬撐滿整個
+   .right-panel 把新加的小圖擠出去。 */
+.sankey-flex {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* StockPricePanel 是 .page 底下跟 .dashboard 平行的手足欄位，這裡用它元件
@@ -563,7 +589,7 @@ body {
   }
   .left-panel,
   .right-panel {
-    height: 500px;
+    height: 640px;
   }
   .ratio-panel {
     height: 320px;
