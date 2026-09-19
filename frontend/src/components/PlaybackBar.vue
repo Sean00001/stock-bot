@@ -73,12 +73,33 @@ const displayOffset = computed(() => {
   return props.modelValue == null ? props.maxOffset : props.modelValue
 })
 
+// 拖動滑桿時想要「邊拖邊動」(圖表即時跟著滑桿位置更新)，但滑桿原生的
+// @input 事件在拖曳時可能一秒觸發幾十次，如果每次都直接 emit 出去讓
+// App.vue 整套聚合重算一次，會多做很多用不到的中間結果(使用者根本沒看到
+// 那些中間畫面就滑過去了)，等於白算。這裡用 requestAnimationFrame 節流：
+// 同一畫面更新週期內(約 1/60 秒)不管收到幾次 @input，只在畫面真的要畫下
+// 一幀之前 emit 最新的一個值，讓瀏覽器可以正常渲染的速度為準，而不是被
+// 滑鼠事件的觸發頻率牽著跑。
+let scrubRafId = null
+
 function onScrub(val) {
   if (isPlaying.value) stopLoop()
   scrubValue.value = Number(val)
+  if (scrubRafId == null) {
+    scrubRafId = requestAnimationFrame(() => {
+      scrubRafId = null
+      if (scrubValue.value != null) emit('update:modelValue', scrubValue.value)
+    })
+  }
 }
 
 function onScrubEnd() {
+  // 保險：萬一放開滑桿那一刻，前一個 rAF 還沒觸發，這裡直接補發一次，確保
+  // 放開當下畫面一定跟滑桿停下來的位置同步，不會因為節流漏掉最後一次更新。
+  if (scrubRafId != null) {
+    cancelAnimationFrame(scrubRafId)
+    scrubRafId = null
+  }
   if (scrubValue.value != null) {
     emit('update:modelValue', scrubValue.value)
     scrubValue.value = null
@@ -143,7 +164,10 @@ function togglePlay() {
   else startLoop()
 }
 
-onBeforeUnmount(stopLoop)
+onBeforeUnmount(() => {
+  stopLoop()
+  if (scrubRafId != null) cancelAnimationFrame(scrubRafId)
+})
 
 // 換日期、或資料被整包換掉時(外面的 App.vue 會在切日期時順手把 modelValue
 // 重設成 null)，播放狀態也要跟著停掉，不然會用舊日期的節奏繼續推進新日期
