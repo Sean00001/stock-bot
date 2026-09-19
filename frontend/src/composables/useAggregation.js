@@ -7,25 +7,25 @@ import { sumWindow, INTERVAL_SECONDS, RESOLUTION_SECONDS } from '../lib/flowCode
  * 解析度(resolution：累積走勢圖取樣顆粒) 現場聚合成畫面要的形狀。
  *
  * decodedRef: useFlowSnapshot().snapshot（ref）
- * controlsRef: ref({ interval, resolution, sector })  sector=null 代表在看全市場(族群層)，
- *              有值代表已下鑽到某個族群，改看該族群底下的個股
+ * controlsRef: ref({ interval, resolution, sector, playhead })
+ *              sector=null 代表在看全市場(族群層)，有值代表已下鑽到某個族群，改看該族群底下的個股
+ *              playhead=null 代表跟著「現在」走(直播模式，跟改版前行為一致)；
+ *              有數字代表使用者正在用播放進度條回放，把整份聚合的「現在」凍結在這個
+ *              開盤後秒數，讓下面所有計算都當作「現在只看得到這個時間點以前的 tick」。
  */
 
 // ---- 記憶化 ----
-// 「返回大盤/下鑽族群/切換日期」在市場層跟族群層之間來回切換時，只要底下的
-// tick 資料沒有真的變(同一份 decoded、同一個 d.to 版本)，重複回到同一個
-// sector/interval/resolution 組合，答案必然完全一樣——沒必要每次都重新掃過
-// 一次全市場/整天的 tick 資料。用一個簡單的 Map 快取：key 含 d.date + d.to
-// (資料版本)，資料一有新 tick 進來(d.to 變了)或換了別的日期，舊 key 自然對
-// 不上、不會被誤用，不需要額外手動清快取。
-//
-// 這樣「返回大盤」幾乎會變成瞬間——因為一開始下鑽進某個族群之前，就已經在
-// 市場層算過一次了，直接命中快取；「切換日期」也會有感改善，因為換日期後
-// 通常也會馬上又切回市場層看總覽，一樣吃得到快取。
+// 「返回大盤/下鑽族群/切換日期/拖動播放進度條」在市場層跟族群層之間來回切換、
+// 或反覆回到同一個播放時間點時，只要底下的 tick 資料版本(見 nowOffset 說明)
+// 沒有真的變，重複回到同一個 sector/interval/resolution/nowOffset 組合，答案
+// 必然完全一樣——沒必要每次都重新掃過一次全市場/整天的 tick 資料。用一個簡單
+// 的 Map 快取：key 含 d.date + nowOffset(見下方)，資料一有新 tick 進來或換了
+// 別的日期、或播放進度條移動到新的時間點，舊 key 自然對不上、不會被誤用，不
+// 需要額外手動清快取。
 //
 // 快取存在 useAggregation() 這個 closure 裡，跟著 App.vue 整個生命週期活著；
-// 用 Map 的插入順序做簡單的 FIFO 上限，避免長時間掛著、切過很多天的資料後
-// 無限長大。
+// 用 Map 的插入順序做簡單的 FIFO 上限，避免長時間掛著、切過很多天/拖過很多
+// 時間點的資料後無限長大。
 const MAX_CACHE_ENTRIES = 300
 
 function memoize(cache, key, compute) {
@@ -47,7 +47,11 @@ export function useAggregation(decodedRef, controlsRef) {
   const stockRankingCache = new Map()
   const offMarketCache = new Map()
 
-  const nowOffset = computed(() => {
+  // 整份快照裡實際存在的最新 tick 秒數 offset——不受播放進度條影響，永遠是
+  // 「這份資料目前真正跑到哪裡」，直播中的日期會隨著新 tick 進來持續變大，
+  // 已收盤 finalize 的日期則固定在當天最後一筆成交。播放進度條的可拖動範圍
+  // 就是 [0, liveMaxOffset]，也是「回到即時」要跳回的位置。
+  const liveMaxOffset = computed(() => {
     const d = decodedRef.value
     if (!d) return 0
     let maxT = 0
@@ -59,6 +63,17 @@ export function useAggregation(decodedRef, controlsRef) {
       }
     }
     return maxT
+  })
+
+  // 下面所有聚合計算實際使用的「現在」：
+  //   - controls.playhead 是 null(沒在播放/沒拖過進度條) -> 跟 liveMaxOffset 一樣，
+  //     就是改版前的直播行為，直播中的日期會自動跟著新 tick 往前走。
+  //   - controls.playhead 是數字 -> 使用者正在回放，把「現在」凍結在這個時間點
+  //     (夾在 [0, liveMaxOffset] 內，避免拖到還沒有資料的未來)。
+  const nowOffset = computed(() => {
+    const ph = controlsRef.value.playhead
+    if (ph == null) return liveMaxOffset.value
+    return Math.min(Math.max(0, ph), liveMaxOffset.value)
   })
 
   const windowRange = computed(() => {
@@ -91,7 +106,7 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     if (!d) return []
     const sectorFilter = controlsRef.value.sector
-    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.interval}`
+    const key = `${d.date}|${nowOffset.value}|${sectorFilter || ''}|${controlsRef.value.interval}`
 
     return memoize(rowsCache, key, () => {
       const { tFrom, tTo } = windowRange.value
@@ -142,9 +157,10 @@ export function useAggregation(decodedRef, controlsRef) {
     return acc
   })
 
-  // ---- 累積淨流入走勢：不受「統計區間」影響，永遠是開盤到現在；
-  //      只有「解析度」決定取樣顆粒。用一次排序 + 單向指標掃描，
-  //      避免每個時間點都重新做一次區間加總（那樣在 1 秒解析度下會很慢）。
+  // ---- 累積淨流入走勢：不受「統計區間」影響，永遠是開盤到「現在」(直播模式
+  //      是真的現在，回放模式是播放進度條停在的那個時間點)；只有「解析度」
+  //      決定取樣顆粒。用一次排序 + 單向指標掃描，避免每個時間點都重新做一次
+  //      區間加總（那樣在 1 秒解析度下會很慢）。
   function flattenPoints(bucketsList) {
     const all = []
     for (const bucket4 of bucketsList) {
@@ -175,7 +191,7 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     if (!d) return { times: [], series: {} }
     const sectorFilter = controlsRef.value.sector
-    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.resolution}`
+    const key = `${d.date}|${nowOffset.value}|${sectorFilter || ''}|${controlsRef.value.resolution}`
 
     return memoize(cumulativeCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -200,7 +216,7 @@ export function useAggregation(decodedRef, controlsRef) {
     })
   })
 
-  // ---- 淨流入占成交值比走勢：跟累積淨流入走勢圖同一份 X 軸(開盤到現在、
+  // ---- 淨流入占成交值比走勢：跟累積淨流入走勢圖同一份 X 軸(開盤到「現在」、
   //      同一個解析度)，只是把「累積淨流入」換算成「累積淨流入 ÷ 累積成交值」
   //      的百分比。固定用全單口徑(不受單量級距篩選影響，永遠是 4 桶加總)，
   //      跟族群/個股層的切換方式跟累積淨流入走勢圖一致。
@@ -212,7 +228,7 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     if (!d) return { times: [], series: {} }
     const sectorFilter = controlsRef.value.sector
-    const key = `${d.date}|${d.to}|${sectorFilter || ''}|${controlsRef.value.resolution}`
+    const key = `${d.date}|${nowOffset.value}|${sectorFilter || ''}|${controlsRef.value.resolution}`
 
     return memoize(ratioCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -257,7 +273,7 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     const sectorFilter = controlsRef.value.sector
     if (!d || !sectorFilter) return []
-    const key = `${d.date}|${d.to}|${sectorFilter}|${controlsRef.value.interval}`
+    const key = `${d.date}|${nowOffset.value}|${sectorFilter}|${controlsRef.value.interval}`
 
     return memoize(stockPanelsCache, key, () => {
       const { tFrom, tTo } = windowRange.value
@@ -267,7 +283,13 @@ export function useAggregation(decodedRef, controlsRef) {
 
       return stockList
         .map((s, idx) => {
-          const priceSeries = priceList[idx] || []
+          const fullPriceSeries = priceList[idx] || []
+          // 回放模式下股價走勢小圖也要凍結在播放時間點，不能露出「未來」的股
+          // 價，不然使用者一邊拖進度條、一邊卻在卡片上看到比現在更後面的價位。
+          const priceSeries =
+            controlsRef.value.playhead == null
+              ? fullPriceSeries
+              : fullPriceSeries.filter((p) => p[0] <= nowOffset.value)
           const prevClose = d.prevClose[s.code] ?? null
           const lastPrice = priceSeries.length ? priceSeries[priceSeries.length - 1][1] : prevClose
           const changePct =
@@ -306,7 +328,7 @@ export function useAggregation(decodedRef, controlsRef) {
   const sectorRanking = computed(() => {
     const d = decodedRef.value
     if (!d) return []
-    const key = `${d.date}|${d.to}|${controlsRef.value.interval}`
+    const key = `${d.date}|${nowOffset.value}|${controlsRef.value.interval}`
 
     return memoize(sectorRankingCache, key, () => {
       const { tFrom, tTo } = windowRange.value
@@ -338,7 +360,7 @@ export function useAggregation(decodedRef, controlsRef) {
   const stockRanking = computed(() => {
     const d = decodedRef.value
     if (!d) return []
-    const key = `${d.date}|${d.to}|${controlsRef.value.interval}`
+    const key = `${d.date}|${nowOffset.value}|${controlsRef.value.interval}`
 
     return memoize(stockRankingCache, key, () => {
       const { tFrom, tTo } = windowRange.value
@@ -375,7 +397,7 @@ export function useAggregation(decodedRef, controlsRef) {
   const offMarketFlowSeries = computed(() => {
     const d = decodedRef.value
     if (!d) return { times: [], newMoney: [], cashOut: [], net: [] }
-    const key = `${d.date}|${d.to}|${controlsRef.value.resolution}`
+    const key = `${d.date}|${nowOffset.value}|${controlsRef.value.resolution}`
 
     return memoize(offMarketCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -414,6 +436,7 @@ export function useAggregation(decodedRef, controlsRef) {
   })
 
   return {
+    liveMaxOffset,
     nowOffset,
     windowRange,
     rows,

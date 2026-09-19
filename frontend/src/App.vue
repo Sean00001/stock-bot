@@ -34,6 +34,13 @@
         </div>
       </header>
 
+      <PlaybackBar
+        :model-value="controls.playhead"
+        @update:model-value="(val) => (controls.playhead = val)"
+        :max-offset="liveMaxOffset"
+        :market-open-ts="snap.snapshot.value?.marketOpenTs || 0"
+      />
+
       <ControlsBar :model-value="controls" @update:model-value="onControlsUpdate" />
 
       <div class="stats-bar">
@@ -121,6 +128,7 @@
 import { reactive, ref, computed, onMounted, watch, nextTick } from 'vue'
 import Login from './components/Login.vue'
 import ControlsBar from './components/ControlsBar.vue'
+import PlaybackBar from './components/PlaybackBar.vue'
 import SankeyChart from './components/SankeyChart.vue'
 import OffMarketFlowChart from './components/OffMarketFlowChart.vue'
 import LineChart from './components/LineChart.vue'
@@ -138,9 +146,11 @@ const controls = reactive({
   interval: 'open', // 統計區間
   resolution: '1m', // 解析度
   sector: null, // 下鑽後的族群名稱，null = 全市場(族群層)
+  playhead: null, // 播放進度條目前停在的開盤後秒數；null = 跟著即時資料走(不在回放)
 })
 
 const {
+  liveMaxOffset,
   rows,
   totals,
   cumulativeSeries,
@@ -235,6 +245,7 @@ async function init() {
 async function onDateChange() {
   await runHeavyChange('切換日期中...', async () => {
     controls.sector = null
+    controls.playhead = null // 換日期時重設播放進度，避免帶著舊日期的時間點造成混淆
     await snap.open(selectedDate.value)
   })
 }
