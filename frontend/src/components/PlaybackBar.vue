@@ -73,39 +73,12 @@ const displayOffset = computed(() => {
   return props.modelValue == null ? props.maxOffset : props.modelValue
 })
 
-// 拖動滑桿時想要「邊拖邊動」(圖表即時跟著滑桿位置更新)，但滑桿原生的
-// @input 事件在拖曳時可能一秒觸發幾十次；如果每次都直接 emit 出去讓
-// App.vue 整套聚合(全市場 rows/累積走勢/比例走勢/排行榜)重算一次、再讓
-// Sankey/LineChart/RatioChart 這三張 ECharts 圖都重新 setOption 一次，
-// 全市場規模下這一整套本來就不便宜，用 requestAnimationFrame(最多每秒
-// 60 次)去觸發，實測會把瀏覽器主執行緒塞爆、感覺整頁卡死。
-//
-// 改成用時間節流：拖曳中最多每 SCRUB_THROTTLE_MS 毫秒才真的觸發一次重算，
-// 不是每次滑鼠移動、也不是每一幀都算，用比較低的更新頻率換取拖曳時畫面
-// 還能正常反應，不會卡死。放開滑桿那一刻一定會補發最後位置，確保停下來
-// 時看到的一定是滑桿實際停的地方，不會因為節流漏掉最後一次更新。
-//
-// 如果 300ms 這個節奏還是感覺卡，可以調大這個數字(例如 500ms)，用「不那
-// 麼即時」換取更順；调到很大(例如 99999)幾乎就等於「放開才更新」。
-const SCRUB_THROTTLE_MS = 300
-let scrubTimer = null
-
 function onScrub(val) {
   if (isPlaying.value) stopLoop()
   scrubValue.value = Number(val)
-  if (scrubTimer == null) {
-    scrubTimer = setTimeout(() => {
-      scrubTimer = null
-      if (scrubValue.value != null) emit('update:modelValue', scrubValue.value)
-    }, SCRUB_THROTTLE_MS)
-  }
 }
 
 function onScrubEnd() {
-  if (scrubTimer != null) {
-    clearTimeout(scrubTimer)
-    scrubTimer = null
-  }
   if (scrubValue.value != null) {
     emit('update:modelValue', scrubValue.value)
     scrubValue.value = null
@@ -118,31 +91,25 @@ function backToLive() {
   emit('update:modelValue', null)
 }
 
-// ---- 播放迴圈：用 requestAnimationFrame 量測真實經過時間(每一幀都算，這
-//      步很便宜，純數字加法)，換算成盤中秒數該前進多少；但真正觸發 emit
-//      (害 App.vue 整套聚合+三張 ECharts 圖重算一次的那個動作)跟拖曳滑桿
-//      一樣，用 SCRUB_THROTTLE_MS 節流，不是每一幀都 emit。這樣播放速度
-//      本身(BASE_SIM_SEC_PER_SEC x 倍率)不會因為節流而變慢——時間累積是
-//      每一幀都在算的，只是畫面/圖表沒有每一幀都重畫，用比較低的重算頻率
-//      換取播放時不會卡頓。
+// ---- 播放迴圈：用 requestAnimationFrame 量測真實經過時間，換算成盤中秒數
+//      前進多少，而不是用固定 setInterval 累加(分頁切到背景、掉幀時容易跟
+//      真實時間對不起來)。每一幀都會讓 App.vue 整套聚合重新算一次，資料量
+//      大(全市場、逐筆)時可能會感覺到頓——如果覺得播放不夠順，可以把下面
+//      這個 rAF 迴圈改成用 setInterval(200ms 左右)代替，用較低的更新頻率
+//      換取比較穩定的畫面。
 let rafId = null
 let lastTs = null
-let lastEmitTs = null
-let pendingOffset = null
 
 function loopStep(ts) {
   if (!isPlaying.value) return
-  if (lastTs == null) {
-    lastTs = ts
-    lastEmitTs = ts
-    pendingOffset = props.modelValue == null ? props.maxOffset : props.modelValue
-  }
+  if (lastTs == null) lastTs = ts
   const dtSec = (ts - lastTs) / 1000
   lastTs = ts
 
-  pendingOffset += dtSec * BASE_SIM_SEC_PER_SEC * speed.value
+  const cur = props.modelValue == null ? props.maxOffset : props.modelValue
+  const next = cur + dtSec * BASE_SIM_SEC_PER_SEC * speed.value
 
-  if (pendingOffset >= props.maxOffset) {
+  if (next >= props.maxOffset) {
     // 播到最新資料了。如果這份資料還在直播中(maxOffset 之後可能還會繼續長
     // 大)，直接切回「跟著即時走」模式，比停在一個很快就會過期的固定點更合理；
     // 已經收盤的日期播到底就單純停在最後一秒。
@@ -151,11 +118,7 @@ function loopStep(ts) {
     return
   }
 
-  if (ts - lastEmitTs >= SCRUB_THROTTLE_MS) {
-    lastEmitTs = ts
-    emit('update:modelValue', pendingOffset)
-  }
-
+  emit('update:modelValue', next)
   rafId = requestAnimationFrame(loopStep)
 }
 
@@ -173,8 +136,6 @@ function stopLoop() {
   if (rafId != null) cancelAnimationFrame(rafId)
   rafId = null
   lastTs = null
-  lastEmitTs = null
-  pendingOffset = null
 }
 
 function togglePlay() {
@@ -182,10 +143,7 @@ function togglePlay() {
   else startLoop()
 }
 
-onBeforeUnmount(() => {
-  stopLoop()
-  if (scrubTimer != null) clearTimeout(scrubTimer)
-})
+onBeforeUnmount(stopLoop)
 
 // 換日期、或資料被整包換掉時(外面的 App.vue 會在切日期時順手把 modelValue
 // 重設成 null)，播放狀態也要跟著停掉，不然會用舊日期的節奏繼續推進新日期
