@@ -47,6 +47,43 @@ export function useAggregation(decodedRef, controlsRef) {
   const stockRankingCache = new Map()
   const offMarketCache = new Map()
 
+  // 全市場擴到 5～10 條連線、近千到近兩千檔股票之後，flattenPoints() 的
+  // 排序(把某個範圍內所有股票 x 4 桶的 tick 攤平、依時間排序合併成一條)變成
+  // 明顯的效能瓶頸：如果每次「現在」(nowOffset)一變——也就是每拖一下播放
+  // 進度條、播放中的每一幀——就重新攤平+排序一次全市場的 tick，使用者會
+  // 感覺拖曳/播放很頓、每動一次都要等好一陣子。
+  //
+  // 但其實「攤平+排序」這件事本身完全不受 nowOffset 影響——同一份資料(同
+  // 一個 d.to)不管現在把「現在」定在哪個時間點，排序結果都一樣，會變的只有
+  // 後面 toCumulativeSteps() 要累加到第幾步。所以把「攤平+排序」單獨快取，
+  // key 只含資料版本(d.date + d.to)+ 範圍(族群/個股/桶別)，不含 nowOffset，
+  // 這樣同一份資料只要排序一次，之後拖幾百次進度條、播放幾百幀，都只需要
+  // 重跑後面那段線性掃描(toCumulativeSteps)，不用再重新排序——這是真正拖慢
+  // 的地方，這樣快取之後應該會快一個數量級以上。
+  const flattenCache = new Map()
+
+  function getFlattened(versionKey, scopeKey, bucketsList) {
+    return memoize(flattenCache, `${versionKey}|${scopeKey}`, () => flattenPoints(bucketsList))
+  }
+
+  // offMarketFlowSeries 專用：要攤平的不是「某個範圍(族群/個股)的全部 4 桶」，
+  // 而是「全市場所有族群、所有股票，但只挑其中一個桶別 b」，跟 getFlattened()
+  // 的資料形狀不一樣，所以另外寫一個攤平函式，快取邏輯(不含 nowOffset，只
+  // 含資料版本)是一樣的。
+  function getFlattenedTier(versionKey, b, d) {
+    return memoize(flattenCache, `${versionKey}|tier${b}`, () => {
+      const all = []
+      for (const sector of d.sectors) {
+        for (const stockBuckets of d.net[sector] || []) {
+          const bucketPts = stockBuckets[b]
+          if (bucketPts) for (const p of bucketPts) all.push(p)
+        }
+      }
+      all.sort((a, c) => a[0] - c[0])
+      return all
+    })
+  }
+
   // 整份快照裡實際存在的最新 tick 秒數 offset——不受播放進度條影響，永遠是
   // 「這份資料目前真正跑到哪裡」，直播中的日期會隨著新 tick 進來持續變大，
   // 已收盤 finalize 的日期則固定在當天最後一筆成交。播放進度條的可拖動範圍
@@ -101,7 +138,9 @@ export function useAggregation(decodedRef, controlsRef) {
     }
   }
 
-  // 目前這個統計區間下，族群層(或下鑽後的個股層)各自的淨流入/成交值
+  // 目前這個統計區間下，族群層(或下鑽後的個股層)各自的淨流入/成交值。
+  // 這裡是用 sumWindow()(對已排序好的單一桶陣列做二分搜尋)而不是攤平+排序，
+  // 本來就很快，全市場規模下也不太需要另外快取排序結果。
   const rows = computed(() => {
     const d = decodedRef.value
     if (!d) return []
@@ -192,6 +231,7 @@ export function useAggregation(decodedRef, controlsRef) {
     if (!d) return { times: [], series: {} }
     const sectorFilter = controlsRef.value.sector
     const key = `${d.date}|${nowOffset.value}|${sectorFilter || ''}|${controlsRef.value.resolution}`
+    const versionKey = `${d.date}|${d.to}`
 
     return memoize(cumulativeCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -203,12 +243,12 @@ export function useAggregation(decodedRef, controlsRef) {
         const stockList = d.stocks[sectorFilter] || []
         const netList = d.net[sectorFilter] || []
         stockList.forEach((s, idx) => {
-          const pts = flattenPoints([netList[idx] || [[], [], [], []]])
+          const pts = getFlattened(versionKey, `net|${sectorFilter}|${s.code}`, [netList[idx] || [[], [], [], []]])
           series[`${s.code} ${s.name}`] = toCumulativeSteps(pts, stepSec, steps)
         })
       } else {
         d.sectors.forEach((sector) => {
-          const pts = flattenPoints(d.net[sector] || [])
+          const pts = getFlattened(versionKey, `net|${sector}`, d.net[sector] || [])
           series[sector] = toCumulativeSteps(pts, stepSec, steps)
         })
       }
@@ -229,6 +269,7 @@ export function useAggregation(decodedRef, controlsRef) {
     if (!d) return { times: [], series: {} }
     const sectorFilter = controlsRef.value.sector
     const key = `${d.date}|${nowOffset.value}|${sectorFilter || ''}|${controlsRef.value.resolution}`
+    const versionKey = `${d.date}|${d.to}`
 
     return memoize(ratioCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -250,14 +291,14 @@ export function useAggregation(decodedRef, controlsRef) {
         const netList = d.net[sectorFilter] || []
         const amtList = d.amt[sectorFilter] || []
         stockList.forEach((s, idx) => {
-          const netPts = flattenPoints([netList[idx] || [[], [], [], []]])
-          const amtPts = flattenPoints([amtList[idx] || [[], [], [], []]])
+          const netPts = getFlattened(versionKey, `net|${sectorFilter}|${s.code}`, [netList[idx] || [[], [], [], []]])
+          const amtPts = getFlattened(versionKey, `amt|${sectorFilter}|${s.code}`, [amtList[idx] || [[], [], [], []]])
           series[`${s.code} ${s.name}`] = ratioOf(netPts, amtPts)
         })
       } else {
         d.sectors.forEach((sector) => {
-          const netPts = flattenPoints(d.net[sector] || [])
-          const amtPts = flattenPoints(d.amt[sector] || [])
+          const netPts = getFlattened(versionKey, `net|${sector}`, d.net[sector] || [])
+          const amtPts = getFlattened(versionKey, `amt|${sector}`, d.amt[sector] || [])
           series[sector] = ratioOf(netPts, amtPts)
         })
       }
@@ -398,6 +439,7 @@ export function useAggregation(decodedRef, controlsRef) {
     const d = decodedRef.value
     if (!d) return { times: [], newMoney: [], cashOut: [], net: [] }
     const key = `${d.date}|${nowOffset.value}|${controlsRef.value.resolution}`
+    const versionKey = `${d.date}|${d.to}`
 
     return memoize(offMarketCache, key, () => {
       const stepSec = RESOLUTION_SECONDS[controlsRef.value.resolution] || 60
@@ -405,14 +447,7 @@ export function useAggregation(decodedRef, controlsRef) {
       const times = Array.from({ length: steps }, (_, k) => (k + 1) * stepSec)
 
       const tierCum = [0, 1, 2, 3].map((b) => {
-        const pts = []
-        for (const sector of d.sectors) {
-          for (const stockBuckets of d.net[sector] || []) {
-            const bucketPts = stockBuckets[b]
-            if (bucketPts) for (const p of bucketPts) pts.push(p)
-          }
-        }
-        pts.sort((a, c) => a[0] - c[0])
+        const pts = getFlattenedTier(versionKey, b, d)
         return toCumulativeSteps(pts, stepSec, steps)
       })
 
